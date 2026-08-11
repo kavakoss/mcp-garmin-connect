@@ -24,7 +24,7 @@ class Settings:
     cache_ttl_seconds: int
 
     @classmethod
-    def from_env(cls) -> "Settings":
+    def from_env(cls) -> Settings:
         load_environment()
         return cls(
             garmin_email=os.getenv("GARMIN_EMAIL"),

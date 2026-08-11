@@ -46,7 +46,12 @@ def main(argv: list[str] | None = None) -> None:
     elif args.command == "tools":
         print(json.dumps(list_capabilities(), indent=2, ensure_ascii=False))
     elif args.command == "ask":
-        _ask(args.question, provider=args.provider, model=args.model, max_tool_rounds=args.max_tool_rounds)
+        _ask(
+            args.question,
+            provider=args.provider,
+            model=args.model,
+            max_tool_rounds=args.max_tool_rounds,
+        )
 
 
 def _login() -> None:

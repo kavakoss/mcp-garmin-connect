@@ -23,6 +23,13 @@ Issues = "https://github.com/your-name/mcp-garmin-connect/issues"
 [project.scripts]
 garmin-mcp = "mcp_garmin_connect.cli:main"
 
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.uv]
+package = true
+
 [dependency-groups]
 dev = [
     "pytest>=8.0,<9",

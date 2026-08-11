@@ -61,7 +61,11 @@ def get_recovery() -> dict[str, Any]:
             rhr_raw = f_rhr.result()
 
         readiness = None
-        item = readiness_raw[0] if isinstance(readiness_raw, list) and readiness_raw else readiness_raw
+        item = (
+            readiness_raw[0]
+            if isinstance(readiness_raw, list) and readiness_raw
+            else readiness_raw
+        )
         if isinstance(item, dict):
             readiness = {
                 "score": item.get("score"),

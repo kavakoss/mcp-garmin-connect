@@ -36,12 +36,16 @@ def run_checks(include_live: bool = False) -> list[Check]:
         Check(
             "token-cache",
             manager.token_cache_present(),
-            "Garmin token cache present" if manager.token_cache_present() else "Run garmin-mcp login",
+            "Garmin token cache present"
+            if manager.token_cache_present()
+            else "Run garmin-mcp login",
         ),
         Check(
             "deepseek-key",
             bool(settings.deepseek_api_key),
-            "DEEPSEEK_API_KEY configured" if settings.deepseek_api_key else "Optional demo key missing",
+            "DEEPSEEK_API_KEY configured"
+            if settings.deepseek_api_key
+            else "Optional demo key missing",
         ),
     ]
     if include_live:

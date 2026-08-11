@@ -3,7 +3,6 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-
 SWIM_TYPES = {"lap_swimming", "open_water_swimming", "swimming"}
 BIKE_TYPES = {
     "cycling",

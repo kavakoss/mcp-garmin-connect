@@ -7,8 +7,7 @@ from typing import Any
 import httpx
 
 from .config import Settings
-from .tools import TOOLS_BY_NAME, TOOL_SPECS, tool_schema
-
+from .tools import TOOL_SPECS, TOOLS_BY_NAME, tool_schema
 
 SYSTEM_PROMPT = """You are a careful endurance training assistant.
 Always use Garmin tools before giving personalized training, recovery, or performance advice.
@@ -52,7 +51,10 @@ class DeepSeekAgent:
                 messages.append(message)
                 tool_calls = message.get("tool_calls") or []
                 if not tool_calls:
-                    return AgentResult(answer=message.get("content") or "", tool_calls=tool_calls_seen)
+                    return AgentResult(
+                        answer=message.get("content") or "",
+                        tool_calls=tool_calls_seen,
+                    )
 
                 for call in tool_calls:
                     function = call.get("function") or {}
