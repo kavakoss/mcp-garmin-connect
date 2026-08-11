@@ -1,0 +1,42 @@
+[project]
+name = "mcp-garmin-connect"
+version = "0.1.0"
+description = "LLM-agnostic MCP server for Garmin Connect data, with an optional DeepSeek demo agent."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Jason" }]
+keywords = ["garmin", "mcp", "model-context-protocol", "deepseek", "fitness"]
+dependencies = [
+    "curl-cffi>=0.7,<1",
+    "garminconnect>=0.3,<1",
+    "httpx>=0.27,<1",
+    "mcp>=1.2,<2",
+    "python-dotenv>=1.0,<2",
+]
+
+[project.urls]
+Homepage = "https://github.com/your-name/mcp-garmin-connect"
+Repository = "https://github.com/your-name/mcp-garmin-connect"
+Issues = "https://github.com/your-name/mcp-garmin-connect/issues"
+
+[project.scripts]
+garmin-mcp = "mcp_garmin_connect.cli:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0,<9",
+    "pytest-cov>=5.0,<6",
+    "ruff>=0.6,<1",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
