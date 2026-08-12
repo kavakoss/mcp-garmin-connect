@@ -54,6 +54,12 @@ class FakeManager(GarminClientManager):
                 anthropic_api_key=None,
                 anthropic_base_url="https://api.anthropic.com",
                 anthropic_model="claude-sonnet-5",
+                openrouter_api_key=None,
+                openrouter_base_url="https://openrouter.ai/api/v1",
+                openrouter_model="google/gemini-3-flash-preview",
+                gemini_api_key=None,
+                gemini_base_url="https://generativelanguage.googleapis.com/v1beta",
+                gemini_model="gemini-3.6-flash",
                 cache_ttl_seconds=60,
             )
         )

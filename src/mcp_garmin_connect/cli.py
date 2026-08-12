@@ -83,6 +83,8 @@ def _doctor(include_live: bool) -> None:
             "deepseek-key",
             "openai-key",
             "claude-key",
+            "openrouter-key",
+            "gemini-key",
         }
         if not check.ok and check.name not in optional:
             failed = True

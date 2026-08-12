@@ -13,6 +13,8 @@ keywords = [
     "deepseek",
     "openai",
     "claude",
+    "openrouter",
+    "gemini",
     "fitness",
 ]
 dependencies = [

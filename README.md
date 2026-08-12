@@ -20,7 +20,7 @@ The core server is provider-neutral. DeepSeek, OpenAI, and Claude integrations a
 
 - Local MCP server for Garmin Connect over `stdio` or Streamable HTTP.
 - 14 Garmin tools and 4 prompt templates.
-- Provider demo bridge for `deepseek`, `openai`, and `claude`.
+- Provider demo bridge for `deepseek`, `openai`, `claude`, `openrouter`, and `gemini`.
 - Windows-first CLI, with cross-platform Python project structure.
 - Explicit opt-in before Garmin health/activity data is sent to any external LLM provider.
 - Mocked test suite plus optional live Garmin smoke tests.
@@ -92,6 +92,8 @@ Provider API access may require a paid account or credits even if the provider's
 DEEPSEEK_API_KEY=sk-...
 OPENAI_API_KEY=sk-...
 ANTHROPIC_API_KEY=sk-ant-...
+OPENROUTER_API_KEY=sk-or-...
+GEMINI_API_KEY=...
 ```
 
 | Provider | Env key | Default model | API style |
@@ -99,6 +101,8 @@ ANTHROPIC_API_KEY=sk-ant-...
 | DeepSeek | `DEEPSEEK_API_KEY` | `deepseek-v4-pro` | OpenAI-compatible Chat Completions |
 | OpenAI | `OPENAI_API_KEY` | `gpt-5` | OpenAI Chat Completions |
 | Claude | `ANTHROPIC_API_KEY` | `claude-sonnet-5` | Anthropic Messages API |
+| OpenRouter | `OPENROUTER_API_KEY` | `google/gemini-3-flash-preview` | OpenAI-compatible Chat Completions |
+| Gemini | `GEMINI_API_KEY` | `gemini-3.6-flash` | Gemini Generate Content API |
 
 Ask through a provider bridge:
 
@@ -106,6 +110,8 @@ Ask through a provider bridge:
 uv run garmin-mcp ask "How is my recovery today?" --provider deepseek --allow-external-health-data
 uv run garmin-mcp ask "Summarize my running for 90 days." --provider openai --allow-external-health-data
 uv run garmin-mcp ask "What should I focus on this week?" --provider claude --allow-external-health-data
+uv run garmin-mcp ask "Summarize my monthly running." --provider openrouter --allow-external-health-data
+uv run garmin-mcp ask "Check my fitness trend." --provider gemini --allow-external-health-data
 ```
 
 The `--allow-external-health-data` flag is required because Garmin tool results can be sent to the selected provider.

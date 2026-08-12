@@ -191,6 +191,79 @@ class ClaudeAgent(BaseToolCallingAgent):
         )
 
 
+class GeminiAgent(BaseToolCallingAgent):
+    provider_name = "gemini"
+
+    def default_model(self) -> str:
+        return self.settings.gemini_model
+
+    def _ask(self, question: str, max_tool_rounds: int) -> AgentResult:
+        api_key = self.settings.require_provider_key("gemini")
+        contents: list[dict[str, Any]] = [
+            {
+                "role": "user",
+                "parts": [{"text": question}],
+            }
+        ]
+        tool_calls_seen: list[str] = []
+
+        with httpx.Client(
+            base_url=self.settings.gemini_base_url.rstrip("/"),
+            timeout=120,
+        ) as client:
+            for _ in range(max_tool_rounds + 1):
+                response = client.post(
+                    f"/models/{self.model}:generateContent",
+                    headers={"x-goog-api-key": api_key},
+                    json={
+                        "system_instruction": {"parts": [{"text": SYSTEM_PROMPT}]},
+                        "contents": contents,
+                        "tools": gemini_tools(),
+                        "tool_config": {
+                            "function_calling_config": {
+                                "mode": "auto",
+                            }
+                        },
+                    },
+                )
+                response.raise_for_status()
+                payload = response.json()
+                content = _gemini_content(payload)
+                parts = content.get("parts") or []
+                function_calls = [
+                    part["functionCall"]
+                    for part in parts
+                    if isinstance(part, dict) and isinstance(part.get("functionCall"), dict)
+                ]
+                if not function_calls:
+                    return AgentResult(
+                        answer=_gemini_text(parts),
+                        tool_calls=tool_calls_seen,
+                    )
+
+                contents.append({"role": "model", "parts": parts})
+                response_parts = []
+                for function_call in function_calls:
+                    name = function_call.get("name")
+                    args = function_call.get("args")
+                    result = call_tool(name, args if isinstance(args, dict) else {})
+                    tool_calls_seen.append(name or "unknown")
+                    response_parts.append(
+                        {
+                            "functionResponse": {
+                                "name": name,
+                                "response": {"result": result},
+                            }
+                        }
+                    )
+                contents.append({"role": "user", "parts": response_parts})
+
+        return AgentResult(
+            answer="The model kept requesting tools and hit the configured tool-round limit.",
+            tool_calls=tool_calls_seen,
+        )
+
+
 class DeepSeekAgent(OpenAICompatibleAgent):
     def __init__(self, settings: Settings | None = None, model: str | None = None) -> None:
         settings = settings or Settings.from_env()
@@ -217,6 +290,19 @@ class OpenAIAgent(OpenAICompatibleAgent):
         )
 
 
+class OpenRouterAgent(OpenAICompatibleAgent):
+    def __init__(self, settings: Settings | None = None, model: str | None = None) -> None:
+        settings = settings or Settings.from_env()
+        super().__init__(
+            api_key=settings.require_provider_key("openrouter"),
+            base_url=settings.openrouter_base_url,
+            default_model=settings.openrouter_model,
+            provider_name="openrouter",
+            settings=settings,
+            model=model,
+        )
+
+
 def create_agent(
     provider: str,
     settings: Settings | None = None,
@@ -229,6 +315,10 @@ def create_agent(
         return OpenAIAgent(settings=settings, model=model)
     if provider_key == "claude":
         return ClaudeAgent(settings=settings, model=model)
+    if provider_key == "openrouter":
+        return OpenRouterAgent(settings=settings, model=model)
+    if provider_key == "gemini":
+        return GeminiAgent(settings=settings, model=model)
     raise ValueError(f"Unsupported provider: {provider}")
 
 
@@ -253,11 +343,23 @@ def provider_specs(settings: Settings | None = None) -> dict[str, ProviderSpec]:
             api_key_configured=bool(settings.anthropic_api_key),
             base_url=settings.anthropic_base_url,
         ),
+        "openrouter": ProviderSpec(
+            name="openrouter",
+            default_model=settings.openrouter_model,
+            api_key_configured=bool(settings.openrouter_api_key),
+            base_url=settings.openrouter_base_url,
+        ),
+        "gemini": ProviderSpec(
+            name="gemini",
+            default_model=settings.gemini_model,
+            api_key_configured=bool(settings.gemini_api_key),
+            base_url=settings.gemini_base_url,
+        ),
     }
 
 
 def supported_providers() -> list[str]:
-    return ["deepseek", "openai", "claude"]
+    return ["deepseek", "openai", "claude", "openrouter", "gemini"]
 
 
 def openai_compatible_tools() -> list[dict[str, Any]]:
@@ -285,6 +387,21 @@ def claude_tools() -> list[dict[str, Any]]:
     ]
 
 
+def gemini_tools() -> list[dict[str, Any]]:
+    return [
+        {
+            "function_declarations": [
+                {
+                    "name": spec.name,
+                    "description": spec.description,
+                    "parameters": tool_schema(spec),
+                }
+                for spec in TOOL_SPECS
+            ]
+        }
+    ]
+
+
 def parse_arguments(raw: Any) -> dict[str, Any]:
     if raw is None or raw == "":
         return {}
@@ -309,3 +426,16 @@ def call_tool(name: str | None, args: dict[str, Any]) -> dict[str, Any]:
 def _claude_text(content: list[dict[str, Any]]) -> str:
     parts = [block.get("text", "") for block in content if block.get("type") == "text"]
     return "\n".join(part for part in parts if part).strip()
+
+
+def _gemini_content(payload: dict[str, Any]) -> dict[str, Any]:
+    candidates = payload.get("candidates") or []
+    if not candidates or not isinstance(candidates[0], dict):
+        return {}
+    content = candidates[0].get("content")
+    return content if isinstance(content, dict) else {}
+
+
+def _gemini_text(parts: list[dict[str, Any]]) -> str:
+    text = [part.get("text", "") for part in parts if isinstance(part, dict)]
+    return "\n".join(part for part in text if part).strip()

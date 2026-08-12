@@ -27,6 +27,12 @@ class Settings:
     anthropic_api_key: str | None
     anthropic_base_url: str
     anthropic_model: str
+    openrouter_api_key: str | None
+    openrouter_base_url: str
+    openrouter_model: str
+    gemini_api_key: str | None
+    gemini_base_url: str
+    gemini_model: str
     cache_ttl_seconds: int
 
     @classmethod
@@ -47,6 +53,18 @@ class Settings:
             anthropic_api_key=os.getenv("ANTHROPIC_API_KEY"),
             anthropic_base_url=os.getenv("ANTHROPIC_BASE_URL", "https://api.anthropic.com"),
             anthropic_model=os.getenv("ANTHROPIC_MODEL", "claude-sonnet-5"),
+            openrouter_api_key=os.getenv("OPENROUTER_API_KEY"),
+            openrouter_base_url=os.getenv(
+                "OPENROUTER_BASE_URL",
+                "https://openrouter.ai/api/v1",
+            ),
+            openrouter_model=os.getenv("OPENROUTER_MODEL", "google/gemini-3-flash-preview"),
+            gemini_api_key=os.getenv("GEMINI_API_KEY"),
+            gemini_base_url=os.getenv(
+                "GEMINI_BASE_URL",
+                "https://generativelanguage.googleapis.com/v1beta",
+            ),
+            gemini_model=os.getenv("GEMINI_MODEL", "gemini-3.6-flash"),
             cache_ttl_seconds=int(os.getenv("GARMIN_CACHE_TTL_SECONDS", "120")),
         )
 
@@ -64,11 +82,15 @@ class Settings:
             "deepseek": "DEEPSEEK_API_KEY",
             "openai": "OPENAI_API_KEY",
             "claude": "ANTHROPIC_API_KEY",
+            "openrouter": "OPENROUTER_API_KEY",
+            "gemini": "GEMINI_API_KEY",
         }
         key_by_provider = {
             "deepseek": self.deepseek_api_key,
             "openai": self.openai_api_key,
             "claude": self.anthropic_api_key,
+            "openrouter": self.openrouter_api_key,
+            "gemini": self.gemini_api_key,
         }
         if provider_key not in key_by_provider:
             raise RuntimeError(f"Unsupported provider: {provider}")
