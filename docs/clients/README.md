@@ -15,7 +15,7 @@ to your client version.
       "command": "uv",
       "args": [
         "--directory",
-        "C:\\Users\\Jason\\Documents\\GitHub\\mcp-garmin",
+        "C:\\path\\to\\mcp-garmin-connect",
         "run",
         "garmin-mcp",
         "serve",
@@ -71,7 +71,7 @@ mcp_servers:
     command: "uv"
     args:
       - "--directory"
-      - "C:\\Users\\Jason\\Documents\\GitHub\\mcp-garmin"
+      - "C:\\path\\to\\mcp-garmin-connect"
       - "run"
       - "garmin-mcp"
       - "serve"

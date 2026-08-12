@@ -157,7 +157,7 @@ Minimal stdio config:
       "command": "uv",
       "args": [
         "--directory",
-        "C:\\Users\\Jason\\Documents\\GitHub\\mcp-garmin",
+        "C:\\path\\to\\mcp-garmin-connect",
         "run",
         "garmin-mcp",
         "serve",
