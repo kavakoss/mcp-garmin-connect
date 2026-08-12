@@ -3,9 +3,8 @@
 [![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![MCP](https://img.shields.io/badge/MCP-compatible-6D28D9)](https://modelcontextprotocol.io/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![CI](https://github.com/Kavakoss/mcp-garmin-connect/actions/workflows/ci.yml/badge.svg)](https://github.com/Kavakoss/mcp-garmin-connect/actions/workflows/ci.yml)
-[![Stars](https://img.shields.io/github/stars/Kavakoss/mcp-garmin-connect?style=social)](https://github.com/Kavakoss/mcp-garmin-connect/stargazers)
-[![Top Language](https://img.shields.io/github/languages/top/Kavakoss/mcp-garmin-connect)](https://github.com/Kavakoss/mcp-garmin-connect)
+[![CI](https://github.com/kavakoss/mcp-garmin-connect/actions/workflows/ci.yml/badge.svg)](https://github.com/kavakoss/mcp-garmin-connect/actions/workflows/ci.yml)
+[![Top Language](https://img.shields.io/github/languages/top/kavakoss/mcp-garmin-connect)](https://github.com/kavakoss/mcp-garmin-connect)
 
 LLM-agnostic Garmin Connect MCP server for training, recovery, sleep, stress, VO2 Max, race predictions, and running summaries.
 
@@ -208,12 +207,13 @@ Some metrics depend on Garmin device capabilities. For example, a device may exp
 
 ## Star History
 
-[![Open Star History](https://img.shields.io/badge/Open-Star%20History-111827)](https://www.star-history.com/#Kavakoss/mcp-garmin-connect&Date)
-
-After this repository is published, open the Star History page above and use its
-`Show real-time chart on your README.md` generator to create the live README
-embed. Star History currently requires a GitHub token for live charts because
-GitHub restricts star history data to repository owners and collaborators.
+<a href="https://www.star-history.com/?repos=kavakoss%2Fmcp-garmin-connect&type=date&legend=top-left">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=kavakoss/mcp-garmin-connect&type=date&theme=dark&legend=top-left&sealed_token=jWwCP1aKpJ82FKqcEEP2UnyXxxIF8WVj4b0NmJGkZDR5Iujd8WmJ43JHjxO4epA5RTFxdG-30WvZcDNhA31RsI3lKr8R1056ExLsKXwknwg1YhFvCGqR1PffqsTOp-s8HNBovtGPGdPAQIbXZEe0YHGaNj3JZ2eWrOBHcBgwa6MVkqHgHzkSMc6EM4En" />
+    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=kavakoss/mcp-garmin-connect&type=date&legend=top-left&sealed_token=jWwCP1aKpJ82FKqcEEP2UnyXxxIF8WVj4b0NmJGkZDR5Iujd8WmJ43JHjxO4epA5RTFxdG-30WvZcDNhA31RsI3lKr8R1056ExLsKXwknwg1YhFvCGqR1PffqsTOp-s8HNBovtGPGdPAQIbXZEe0YHGaNj3JZ2eWrOBHcBgwa6MVkqHgHzkSMc6EM4En" />
+    <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=kavakoss/mcp-garmin-connect&type=date&legend=top-left&sealed_token=jWwCP1aKpJ82FKqcEEP2UnyXxxIF8WVj4b0NmJGkZDR5Iujd8WmJ43JHjxO4epA5RTFxdG-30WvZcDNhA31RsI3lKr8R1056ExLsKXwknwg1YhFvCGqR1PffqsTOp-s8HNBovtGPGdPAQIbXZEe0YHGaNj3JZ2eWrOBHcBgwa6MVkqHgHzkSMc6EM4En" />
+  </picture>
+</a>
 
 ## License
 
@@ -224,12 +224,12 @@ This project is licensed under the [MIT License](LICENSE).
 Codex does not push this repo. To publish it yourself:
 
 ```powershell
-git remote add origin https://github.com/Kavakoss/mcp-garmin-connect.git
+git remote add origin https://github.com/kavakoss/mcp-garmin-connect.git
 git push -u origin main
 ```
 
 ---
 
-Made by [kavakoss](https://github.com/Kavakoss).
+Made by [kavakoss](https://github.com/kavakoss).
 
 Inspired by [Jack-Abyss/claude-garmin](https://github.com/Jack-Abyss/claude-garmin), with a clean-room implementation focused on LLM-agnostic MCP usage.
