@@ -21,6 +21,12 @@ class Settings:
     deepseek_api_key: str | None
     deepseek_base_url: str
     deepseek_model: str
+    openai_api_key: str | None
+    openai_base_url: str
+    openai_model: str
+    anthropic_api_key: str | None
+    anthropic_base_url: str
+    anthropic_model: str
     cache_ttl_seconds: int
 
     @classmethod
@@ -35,6 +41,12 @@ class Settings:
             deepseek_api_key=os.getenv("DEEPSEEK_API_KEY"),
             deepseek_base_url=os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
             deepseek_model=os.getenv("DEEPSEEK_MODEL", "deepseek-v4-pro"),
+            openai_api_key=os.getenv("OPENAI_API_KEY"),
+            openai_base_url=os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1"),
+            openai_model=os.getenv("OPENAI_MODEL", "gpt-5"),
+            anthropic_api_key=os.getenv("ANTHROPIC_API_KEY"),
+            anthropic_base_url=os.getenv("ANTHROPIC_BASE_URL", "https://api.anthropic.com"),
+            anthropic_model=os.getenv("ANTHROPIC_MODEL", "claude-sonnet-5"),
             cache_ttl_seconds=int(os.getenv("GARMIN_CACHE_TTL_SECONDS", "120")),
         )
 
@@ -44,6 +56,23 @@ class Settings:
         return self.garmin_email, self.garmin_password
 
     def require_deepseek_key(self) -> str:
-        if not self.deepseek_api_key:
-            raise RuntimeError("DEEPSEEK_API_KEY must be set for the DeepSeek demo agent.")
-        return self.deepseek_api_key
+        return self.require_provider_key("deepseek")
+
+    def require_provider_key(self, provider: str) -> str:
+        provider_key = provider.lower()
+        env_name_by_provider = {
+            "deepseek": "DEEPSEEK_API_KEY",
+            "openai": "OPENAI_API_KEY",
+            "claude": "ANTHROPIC_API_KEY",
+        }
+        key_by_provider = {
+            "deepseek": self.deepseek_api_key,
+            "openai": self.openai_api_key,
+            "claude": self.anthropic_api_key,
+        }
+        if provider_key not in key_by_provider:
+            raise RuntimeError(f"Unsupported provider: {provider}")
+        key = key_by_provider[provider_key]
+        if not key:
+            raise RuntimeError(f"{env_name_by_provider[provider_key]} must be set for {provider}.")
+        return key

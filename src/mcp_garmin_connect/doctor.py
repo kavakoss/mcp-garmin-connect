@@ -6,6 +6,7 @@ from dataclasses import dataclass
 
 from .config import Settings
 from .garmin_client import GarminClientManager
+from .providers import provider_specs
 
 
 @dataclass(frozen=True)
@@ -40,14 +41,17 @@ def run_checks(include_live: bool = False) -> list[Check]:
             if manager.token_cache_present()
             else "Run garmin-mcp login",
         ),
-        Check(
-            "deepseek-key",
-            bool(settings.deepseek_api_key),
-            "DEEPSEEK_API_KEY configured"
-            if settings.deepseek_api_key
-            else "Optional demo key missing",
-        ),
     ]
+    for provider_name, spec in provider_specs(settings).items():
+        checks.append(
+            Check(
+                f"{provider_name}-key",
+                spec.api_key_configured,
+                f"{provider_name} API key configured"
+                if spec.api_key_configured
+                else f"Optional {provider_name} API key missing",
+            )
+        )
     if include_live:
         try:
             manager.login(allow_interactive_mfa=False)

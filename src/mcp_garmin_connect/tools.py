@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import defaultdict
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -337,7 +338,126 @@ def get_activity_detail(activity_id: int) -> dict[str, Any]:
         "sport": sport_bucket(type_key),
         "type_key": type_key,
         "summary": normalize_activity(summary) or summary,
+        "training_effect": {
+            "aerobic": summary.get("trainingEffect") or summary.get("aerobicTrainingEffect"),
+            "anaerobic": summary.get("anaerobicTrainingEffect"),
+            "label": summary.get("trainingEffectLabel"),
+            "aerobic_message": summary.get("aerobicTrainingEffectMessage"),
+            "anaerobic_message": summary.get("anaerobicTrainingEffectMessage"),
+        },
         "raw_keys": sorted(raw.keys())[:80],
+    }
+
+
+def _run_activities(days: int) -> list[dict[str, Any]]:
+    return [
+        activity
+        for activity in _fetch_recent_activities(days)
+        if activity.get("sport") == "run"
+    ]
+
+
+def _pace_seconds_from_activity(activity: dict[str, Any]) -> float | None:
+    distance = activity.get("distance_km")
+    duration = activity.get("duration_min")
+    if not isinstance(distance, (int, float)) or not isinstance(duration, (int, float)):
+        return None
+    if distance <= 0 or duration <= 0:
+        return None
+    return (duration * 60) / distance
+
+
+def _format_pace(seconds_per_km: float | None) -> str | None:
+    if seconds_per_km is None:
+        return None
+    minutes = int(seconds_per_km // 60)
+    seconds = int(seconds_per_km % 60)
+    return f"{minutes}:{seconds:02d}/km"
+
+
+def _month_key(activity: dict[str, Any]) -> str:
+    date_value = activity.get("date") or ""
+    return str(date_value)[:7] if date_value else "unknown"
+
+
+def get_running_summary(days: int = 90) -> dict[str, Any]:
+    """Running summary: sessions, distance, pace, HR, longest run, fastest run, monthly split."""
+    safe_days = max(1, min(days, 365))
+    runs = _run_activities(safe_days)
+    total_distance = sum(activity.get("distance_km") or 0 for activity in runs)
+    total_minutes = sum(activity.get("duration_min") or 0 for activity in runs)
+    hr_values = [
+        activity["hr_avg"]
+        for activity in runs
+        if isinstance(activity.get("hr_avg"), (int, float))
+    ]
+    longest = max(runs, key=lambda activity: activity.get("distance_km") or 0, default=None)
+    paced_runs = [
+        (activity, _pace_seconds_from_activity(activity))
+        for activity in runs
+        if _pace_seconds_from_activity(activity) is not None
+    ]
+    fastest = min(paced_runs, key=lambda item: item[1] or 999999, default=(None, None))[0]
+    return {
+        "period_days": safe_days,
+        "sessions": len(runs),
+        "total_distance_km": round_number(total_distance, 2),
+        "total_duration_hours": round_number(total_minutes / 60, 2),
+        "average_pace": _format_pace((total_minutes * 60) / total_distance)
+        if total_distance
+        else None,
+        "average_hr": round_number(sum(hr_values) / len(hr_values), 0) if hr_values else None,
+        "longest_run": _compact_activity(longest),
+        "fastest_run": _compact_activity(fastest),
+        "monthly": get_monthly_running_stats(months=max(1, min(12, (safe_days + 30) // 31)))[
+            "months"
+        ],
+    }
+
+
+def get_monthly_running_stats(months: int = 3) -> dict[str, Any]:
+    """Monthly running stats for the last N calendar-ish months based on recent activities."""
+    safe_months = max(1, min(months, 12))
+    runs = _run_activities(safe_months * 31)
+    buckets: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for run in runs:
+        buckets[_month_key(run)].append(run)
+    months_out = []
+    for month in sorted(buckets.keys(), reverse=True)[:safe_months]:
+        items = buckets[month]
+        distance = sum(item.get("distance_km") or 0 for item in items)
+        minutes = sum(item.get("duration_min") or 0 for item in items)
+        hr_values = [
+            item["hr_avg"] for item in items if isinstance(item.get("hr_avg"), (int, float))
+        ]
+        months_out.append(
+            {
+                "month": month,
+                "sessions": len(items),
+                "total_distance_km": round_number(distance, 2),
+                "total_duration_hours": round_number(minutes / 60, 2),
+                "average_pace": _format_pace((minutes * 60) / distance)
+                if distance
+                else None,
+                "average_hr": round_number(sum(hr_values) / len(hr_values), 0)
+                if hr_values
+                else None,
+            }
+        )
+    return {"months_requested": safe_months, "months": months_out}
+
+
+def _compact_activity(activity: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not activity:
+        return None
+    return {
+        "activity_id": activity.get("activity_id"),
+        "name": activity.get("name"),
+        "date": activity.get("date"),
+        "distance_km": activity.get("distance_km"),
+        "duration": activity.get("duration"),
+        "pace": _format_pace(_pace_seconds_from_activity(activity)),
+        "hr_avg": activity.get("hr_avg"),
     }
 
 
@@ -531,6 +651,7 @@ def get_full_snapshot(activity_days: int = 14, load_days: int = 28) -> dict[str,
         "recent_load": lambda: get_recent_load(load_days),
         "training_load": get_training_load,
         "fitness": get_fitness,
+        "running_summary": lambda: get_running_summary(activity_days),
         "zones": get_zones,
         "personal_records": get_personal_records,
     }
@@ -592,6 +713,18 @@ TOOL_SPECS = [
     ToolSpec("get_fitness", get_fitness.__doc__ or "", get_fitness, {}),
     ToolSpec("get_zones", get_zones.__doc__ or "", get_zones, {}),
     ToolSpec("get_personal_records", get_personal_records.__doc__ or "", get_personal_records, {}),
+    ToolSpec(
+        "get_running_summary",
+        get_running_summary.__doc__ or "",
+        get_running_summary,
+        {"days": {"type": "integer", "default": 90, "minimum": 1, "maximum": 365}},
+    ),
+    ToolSpec(
+        "get_monthly_running_stats",
+        get_monthly_running_stats.__doc__ or "",
+        get_monthly_running_stats,
+        {"months": {"type": "integer", "default": 3, "minimum": 1, "maximum": 12}},
+    ),
     ToolSpec(
         "get_health_summary",
         get_health_summary.__doc__ or "",

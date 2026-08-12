@@ -24,6 +24,12 @@ def test_agent_requires_external_health_data_opt_in() -> None:
             deepseek_api_key="dummy",
             deepseek_base_url="https://api.deepseek.com",
             deepseek_model="deepseek-v4-pro",
+            openai_api_key=None,
+            openai_base_url="https://api.openai.com/v1",
+            openai_model="gpt-5",
+            anthropic_api_key=None,
+            anthropic_base_url="https://api.anthropic.com",
+            anthropic_model="claude-sonnet-5",
             cache_ttl_seconds=60,
         )
     )

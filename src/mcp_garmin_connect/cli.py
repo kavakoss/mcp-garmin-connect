@@ -8,6 +8,7 @@ import sys
 from .config import Settings
 from .doctor import run_checks
 from .garmin_client import GarminClientManager
+from .providers import create_agent, supported_providers
 from .server import list_capabilities, run_server
 
 
@@ -30,7 +31,7 @@ def main(argv: list[str] | None = None) -> None:
 
     ask = sub.add_parser("ask", help="Ask a provider-backed demo agent.")
     ask.add_argument("question")
-    ask.add_argument("--provider", choices=["deepseek"], default="deepseek")
+    ask.add_argument("--provider", choices=supported_providers(), default="deepseek")
     ask.add_argument("--model", default=None)
     ask.add_argument("--max-tool-rounds", type=int, default=4)
     ask.add_argument(
@@ -76,7 +77,14 @@ def _doctor(include_live: bool) -> None:
     failed = False
     for check in checks:
         status = "OK" if check.ok else "WARN"
-        if not check.ok and check.name not in {"deepseek-key", "token-store", "token-cache"}:
+        optional = {
+            "token-store",
+            "token-cache",
+            "deepseek-key",
+            "openai-key",
+            "claude-key",
+        }
+        if not check.ok and check.name not in optional:
             failed = True
             status = "FAIL"
         print(f"[{status}] {check.name}: {check.detail}")
@@ -97,11 +105,9 @@ def _ask(
         raise SystemExit(
             "Refusing to send Garmin health/activity data to an external LLM provider without "
             "explicit opt-in. Re-run with --allow-external-health-data after you understand "
-            "that Garmin tool results may be sent to DeepSeek."
+            f"that Garmin tool results may be sent to {provider}."
         )
-    from .deepseek_agent import DeepSeekAgent
-
-    result = DeepSeekAgent(model=model).ask(
+    result = create_agent(provider, model=model).ask(
         question,
         max_tool_rounds=max_tool_rounds,
         allow_external_health_data=True,

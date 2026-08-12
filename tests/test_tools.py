@@ -4,7 +4,14 @@ from typing import Any
 
 from mcp_garmin_connect.config import Settings
 from mcp_garmin_connect.garmin_client import GarminClientManager, reset_manager
-from mcp_garmin_connect.tools import TOOL_SPECS, get_recent_activities, get_recent_load, tool_schema
+from mcp_garmin_connect.tools import (
+    TOOL_SPECS,
+    get_monthly_running_stats,
+    get_recent_activities,
+    get_recent_load,
+    get_running_summary,
+    tool_schema,
+)
 
 
 class FakeGarmin:
@@ -41,6 +48,12 @@ class FakeManager(GarminClientManager):
                 deepseek_api_key=None,
                 deepseek_base_url="https://api.deepseek.com",
                 deepseek_model="deepseek-v4-pro",
+                openai_api_key=None,
+                openai_base_url="https://api.openai.com/v1",
+                openai_model="gpt-5",
+                anthropic_api_key=None,
+                anthropic_base_url="https://api.anthropic.com",
+                anthropic_model="claude-sonnet-5",
                 cache_ttl_seconds=60,
             )
         )
@@ -69,6 +82,30 @@ def test_recent_load_aggregates_by_sport() -> None:
 
     assert result["by_sport"]["run"]["total_km"] == 5.0
     assert result["by_sport"]["bike"]["total_hours"] == 1.0
+
+
+def test_running_summary() -> None:
+    import mcp_garmin_connect.garmin_client as garmin_client
+
+    garmin_client._manager = FakeManager()
+
+    result = get_running_summary(days=90)
+
+    assert result["sessions"] == 1
+    assert result["total_distance_km"] == 5.0
+    assert result["average_pace"] == "6:00/km"
+    assert result["longest_run"]["name"] == "Run"
+
+
+def test_monthly_running_stats() -> None:
+    import mcp_garmin_connect.garmin_client as garmin_client
+
+    garmin_client._manager = FakeManager()
+
+    result = get_monthly_running_stats(months=3)
+
+    assert result["months"][0]["month"] == "2999-01"
+    assert result["months"][0]["sessions"] == 1
 
 
 def test_tool_schemas_are_objects() -> None:
