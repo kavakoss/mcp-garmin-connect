@@ -272,6 +272,39 @@ def _fetch_recent_activities(days: int, limit: int = 200) -> list[dict[str, Any]
     return activities
 
 
+def _recent_activity_dates(days: int = 120, limit: int = 200) -> list[str]:
+    client = _client()
+    manager = get_manager()
+    raw = manager.safe_call(lambda: client.get_activities(0, limit), default=[]) or []
+    dates: list[str] = []
+    cutoff = date_range_iso(days)[-1]
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        started = item.get("startTimeLocal") or ""
+        day = started[:10]
+        if not day or day < cutoff or day in dates:
+            continue
+        dates.append(day)
+    return dates
+
+
+def _latest_max_metrics() -> tuple[str | None, dict[str, Any] | None]:
+    client = _client()
+    manager = get_manager()
+    candidate_dates = [today_iso(), *_recent_activity_dates()]
+    seen: set[str] = set()
+    for day in candidate_dates:
+        if day in seen:
+            continue
+        seen.add(day)
+        raw = manager.safe_call(lambda d=day: client.get_max_metrics(d), default=None)
+        item = raw[0] if isinstance(raw, list) and raw else raw
+        if isinstance(item, dict) and item:
+            return day, item
+    return None, None
+
+
 def get_recent_activities(days: int = 14, limit: int = 50) -> dict[str, Any]:
     """Recent Garmin activities with normalized sport-aware summary fields."""
     safe_limit = max(1, min(limit, 200))
@@ -348,39 +381,69 @@ def get_training_load() -> dict[str, Any]:
         lambda: manager.safe_call(lambda: client.get_training_status(today), default={}),
     )
     if not isinstance(raw, dict) or not raw:
-        return {"date": today, "error": "training status not available"}
+        return {
+            "date": today,
+            "source": "garmin_training_status",
+            "available": False,
+            "reason": "training status endpoint returned no data",
+        }
 
     acute = chronic = ratio = status = None
+    load_balance = raw.get("mostRecentTrainingLoadBalance")
+    if isinstance(load_balance, dict):
+        acute = round_number(
+            load_balance.get("acuteTrainingLoad")
+            or load_balance.get("dailyTrainingLoadAcute")
+            or load_balance.get("load")
+            or load_balance.get("trainingLoad"),
+            1,
+        )
+        chronic = round_number(
+            load_balance.get("chronicTrainingLoad")
+            or load_balance.get("dailyTrainingLoadChronic"),
+            1,
+        )
+        ratio = round_number(
+            load_balance.get("acuteChronicWorkloadRatio")
+            or load_balance.get("dailyAcuteChronicWorkloadRatio"),
+            2,
+        )
+        status = load_balance.get("acwrStatus") or load_balance.get("loadStatus")
+
     latest_map = (raw.get("mostRecentTrainingStatus") or {}).get("latestTrainingStatusData") or {}
     if latest_map:
         first = next(iter(latest_map.values()))
         if isinstance(first, dict):
             atl = first.get("acuteTrainingLoadDTO") or {}
-            acute = round_number(atl.get("dailyTrainingLoadAcute"), 1)
-            chronic = round_number(atl.get("dailyTrainingLoadChronic"), 1)
-            ratio = round_number(atl.get("dailyAcuteChronicWorkloadRatio"), 2)
-            status = atl.get("acwrStatus")
+            acute = acute or round_number(atl.get("dailyTrainingLoadAcute"), 1)
+            chronic = chronic or round_number(atl.get("dailyTrainingLoadChronic"), 1)
+            ratio = ratio or round_number(atl.get("dailyAcuteChronicWorkloadRatio"), 2)
+            status = status or atl.get("acwrStatus")
 
     return {
         "date": today,
+        "source": "garmin_training_status",
+        "available": any(value is not None for value in [acute, chronic, ratio, status]),
         "acute_load": acute,
         "chronic_load": chronic,
         "load_ratio": ratio,
         "acwr_status": status,
+        "raw_sections_present": {
+            "mostRecentTrainingLoadBalance": raw.get("mostRecentTrainingLoadBalance") is not None,
+            "mostRecentTrainingStatus": raw.get("mostRecentTrainingStatus") is not None,
+        },
     }
 
 
 def get_fitness() -> dict[str, Any]:
     """VO2 max, cycling FTP, and race predictions."""
     client = _client()
-    today = today_iso()
     manager = get_manager()
-    max_raw = manager.safe_call(lambda: client.get_max_metrics(today), default=[])
     race_raw = manager.safe_call(lambda: client.get_race_predictions(), default=None)
     ftp_raw = manager.safe_call(lambda: client.get_cycling_ftp(), default=None)
 
     vo2_run = vo2_bike = None
-    item = max_raw[0] if isinstance(max_raw, list) and max_raw else max_raw
+    metrics_date, item = _latest_max_metrics()
     if isinstance(item, dict):
         generic = item.get("generic") or {}
         cycling = item.get("cycling") or {}
@@ -401,6 +464,7 @@ def get_fitness() -> dict[str, Any]:
                 race[key_out] = {"seconds": int(seconds)}
 
     return {
+        "metrics_date": metrics_date,
         "vo2_max_running": vo2_run,
         "vo2_max_cycling": vo2_bike,
         "cycling_ftp_w": ftp_raw.get("functionalThresholdPower")
