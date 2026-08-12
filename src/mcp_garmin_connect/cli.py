@@ -33,6 +33,14 @@ def main(argv: list[str] | None = None) -> None:
     ask.add_argument("--provider", choices=["deepseek"], default="deepseek")
     ask.add_argument("--model", default=None)
     ask.add_argument("--max-tool-rounds", type=int, default=4)
+    ask.add_argument(
+        "--allow-external-health-data",
+        action="store_true",
+        help=(
+            "Allow Garmin health/activity tool results to be sent to the selected LLM provider. "
+            "Required for provider-backed tool calls."
+        ),
+    )
 
     args = parser.parse_args(argv)
     logging.basicConfig(level=getattr(logging, args.log_level.upper(), logging.WARNING))
@@ -51,6 +59,7 @@ def main(argv: list[str] | None = None) -> None:
             provider=args.provider,
             model=args.model,
             max_tool_rounds=args.max_tool_rounds,
+            allow_external_health_data=args.allow_external_health_data,
         )
 
 
@@ -75,12 +84,28 @@ def _doctor(include_live: bool) -> None:
         raise SystemExit(1)
 
 
-def _ask(question: str, provider: str, model: str | None, max_tool_rounds: int) -> None:
+def _ask(
+    question: str,
+    provider: str,
+    model: str | None,
+    max_tool_rounds: int,
+    allow_external_health_data: bool,
+) -> None:
     if provider != "deepseek":
         raise SystemExit(f"Unsupported provider: {provider}")
+    if not allow_external_health_data:
+        raise SystemExit(
+            "Refusing to send Garmin health/activity data to an external LLM provider without "
+            "explicit opt-in. Re-run with --allow-external-health-data after you understand "
+            "that Garmin tool results may be sent to DeepSeek."
+        )
     from .deepseek_agent import DeepSeekAgent
 
-    result = DeepSeekAgent(model=model).ask(question, max_tool_rounds=max_tool_rounds)
+    result = DeepSeekAgent(model=model).ask(
+        question,
+        max_tool_rounds=max_tool_rounds,
+        allow_external_health_data=True,
+    )
     if result.tool_calls:
         print(f"Tool calls: {', '.join(result.tool_calls)}", file=sys.stderr)
     print(result.answer)

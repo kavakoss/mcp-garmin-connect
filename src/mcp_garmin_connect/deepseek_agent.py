@@ -25,7 +25,18 @@ class DeepSeekAgent:
         self.settings = settings or Settings.from_env()
         self.model = model or self.settings.deepseek_model
 
-    def ask(self, question: str, max_tool_rounds: int = 4) -> AgentResult:
+    def ask(
+        self,
+        question: str,
+        max_tool_rounds: int = 4,
+        allow_external_health_data: bool = False,
+    ) -> AgentResult:
+        if not allow_external_health_data:
+            raise PermissionError(
+                "The DeepSeek demo agent can send Garmin health/activity data to DeepSeek. "
+                "Pass allow_external_health_data=True only after the user explicitly agrees."
+            )
+
         api_key = self.settings.require_deepseek_key()
         messages: list[dict[str, Any]] = [
             {"role": "system", "content": SYSTEM_PROMPT},

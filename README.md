@@ -39,8 +39,11 @@ uv run garmin-mcp doctor
 uv run garmin-mcp tools
 uv run garmin-mcp serve --transport stdio
 uv run garmin-mcp serve --transport http --host 127.0.0.1 --port 8765
-uv run garmin-mcp ask "How is my recovery today?" --provider deepseek
+uv run garmin-mcp ask "How is my recovery today?" --provider deepseek --allow-external-health-data
 ```
+
+`ask` can send Garmin health/activity tool results to the selected LLM provider. The
+`--allow-external-health-data` flag is intentionally required so this never happens by accident.
 
 ## MCP Tools
 
