@@ -7,6 +7,7 @@ from mcp_garmin_connect.garmin_client import GarminClientManager, reset_manager
 from mcp_garmin_connect.tools import (
     TOOL_SPECS,
     get_monthly_running_stats,
+    get_personal_records,
     get_recent_activities,
     get_recent_load,
     get_running_summary,
@@ -35,6 +36,36 @@ class FakeGarmin:
                 "distance": 30000,
                 "averageHR": 130,
             },
+        ]
+
+    def get_personal_record(self) -> dict[str, Any]:
+        return {
+            "personalRecords": [
+                {
+                    "typeId": 3,
+                    "prTypeLabelKey": None,
+                    "value": "00:30:00",
+                    "prStartTimeGmtFormatted": "2999-01-01",
+                },
+                {
+                    "typeId": 4,
+                    "value": "01:05:00",
+                    "prStartTimeGmtFormatted": "2999-01-02",
+                }
+            ]
+        }
+
+    display_name = "fake-user"
+
+    def connectapi(self, url: str) -> list[dict[str, Any]]:
+        assert url == "/personalrecord-service/personalrecordtype/prtypes/fake-user"
+        return [
+            {
+                "id": 3,
+                "key": "pr.label.5k.run",
+                "visible": True,
+                "sport": "RUNNING",
+            }
         ]
 
 
@@ -112,6 +143,20 @@ def test_monthly_running_stats() -> None:
 
     assert result["months"][0]["month"] == "2999-01"
     assert result["months"][0]["sessions"] == 1
+
+
+def test_personal_records_uses_garminconnect_singular_method() -> None:
+    import mcp_garmin_connect.garmin_client as garmin_client
+
+    garmin_client._manager = FakeManager()
+
+    result = get_personal_records()
+
+    assert result["count"] == 2
+    assert result["records"][0]["name"] == "Fastest 5K"
+    assert result["records"][0]["label_key"] == "pr.label.5k.run"
+    assert result["records"][0]["sport"] == "RUNNING"
+    assert result["records"][1]["name"] == "Fastest 10K"
 
 
 def test_tool_schemas_are_objects() -> None:

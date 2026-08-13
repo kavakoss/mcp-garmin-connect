@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from collections import defaultdict
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
@@ -23,12 +24,100 @@ class ToolSpec:
     parameters: dict[str, Any]
 
 
+_KNOWN_PR_LABELS_BY_KEY = {
+    "pr.label.1k.run": "Fastest 1K",
+    "pr.label.1mile.run": "Fastest 1 mile",
+    "pr.label.5k.run": "Fastest 5K",
+    "pr.label.10k.run": "Fastest 10K",
+    "pr.label.half.marathon": "Fastest half marathon",
+    "pr.label.full.marathon": "Fastest marathon",
+    "pr.label.longest.run": "Longest run",
+    "pr.label.40k.cycling": "Fastest 40K ride",
+    "pr.label.longest.ride": "Longest ride",
+    "pr.label.max.elevation.gain": "Most elevation gained",
+    "pr.label.best.20min.power": "Best 20-minute average power",
+    "pr.label.most.steps.day": "Most steps in a day",
+    "pr.label.most.steps.week": "Most steps in a week",
+    "pr.label.most.steps.month": "Most steps in a month",
+    "pr.label.longest.goal.streak": "Longest step goal streak",
+}
+
+_KNOWN_PR_LABELS_BY_TYPE_ID = {
+    1: "Fastest 1K",
+    2: "Fastest 1 mile",
+    3: "Fastest 5K",
+    4: "Fastest 10K",
+    5: "Fastest half marathon",
+    6: "Fastest marathon",
+}
+
+
 def _client() -> Any:
     return get_manager().client()
 
 
 def _manager_call(key: str, factory: Callable[[], Any]) -> Any:
     return get_manager().cached(key, factory)
+
+
+def _personal_record_type_id(value: Any) -> int | None:
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str) and value.isdigit():
+        return int(value)
+    return None
+
+
+def _personal_record_label_key(value: Any) -> str | None:
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    if isinstance(value, dict):
+        for key in ("key", "labelKey", "typeLabelKey", "displayName", "label"):
+            label = value.get(key)
+            if isinstance(label, str) and label.strip():
+                return label.strip()
+    return None
+
+
+def _personal_record_label(label_key: str | None, type_id: int | None) -> str | None:
+    if label_key:
+        if label_key in _KNOWN_PR_LABELS_BY_KEY:
+            return _KNOWN_PR_LABELS_BY_KEY[label_key]
+        if not any(separator in label_key for separator in (".", "_", "-")):
+            return label_key
+        cleaned = re.sub(r"^pr[._-]label[._-]", "", label_key, flags=re.IGNORECASE)
+        cleaned = re.sub(r"[._-]+", " ", cleaned).strip()
+        return cleaned.title() if cleaned else label_key
+    if type_id is not None:
+        return _KNOWN_PR_LABELS_BY_TYPE_ID.get(type_id)
+    return None
+
+
+def _personal_record_type_map(client: Any, manager: Any) -> dict[int, dict[str, Any]]:
+    display_name = getattr(client, "display_name", None)
+    if not display_name or not hasattr(client, "connectapi"):
+        return {}
+
+    def fetch() -> Any:
+        return manager.safe_call(
+            lambda: client.connectapi(
+                f"/personalrecord-service/personalrecordtype/prtypes/{display_name}"
+            ),
+            default=[],
+        )
+
+    raw = _manager_call("personal_record_types", fetch)
+    if not isinstance(raw, list):
+        return {}
+
+    type_map = {}
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        type_id = _personal_record_type_id(item.get("id") or item.get("typeId"))
+        if type_id is not None:
+            type_map[type_id] = item
+    return type_map
 
 
 def get_recovery() -> dict[str, Any]:
@@ -612,23 +701,53 @@ def get_personal_records() -> dict[str, Any]:
     """Personal records returned by Garmin Connect."""
     client = _client()
     manager = get_manager()
-    raw = _manager_call(
-        "personal_records", lambda: manager.safe_call(client.get_personal_records, default=[])
+    getter = getattr(client, "get_personal_record", None) or getattr(
+        client, "get_personal_records", None
     )
+    if getter is None:
+        return {
+            "count": 0,
+            "records": [],
+            "available": False,
+            "reason": "garminconnect client does not expose a personal records endpoint",
+        }
+    raw = _manager_call(
+        "personal_records", lambda: manager.safe_call(getter, default=[])
+    )
+    if isinstance(raw, dict):
+        raw = (
+            raw.get("personalRecords")
+            or raw.get("userPersonalRecords")
+            or raw.get("records")
+            or raw.get("prRecords")
+            or []
+        )
+    type_map = _personal_record_type_map(client, manager)
     records = []
     if isinstance(raw, list):
         for record in raw:
             if not isinstance(record, dict):
                 continue
+            type_id = _personal_record_type_id(record.get("typeId"))
+            type_info = type_map.get(type_id) if type_id is not None else None
+            label_key = (
+                _personal_record_label_key(record.get("prTypeLabelKey"))
+                or _personal_record_label_key(record.get("typeLabelKey"))
+                or _personal_record_label_key(type_info)
+            )
+            label = _personal_record_label(label_key, type_id)
             records.append(
                 {
-                    "type_id": record.get("typeId"),
-                    "label": record.get("prTypeLabelKey") or record.get("typeLabelKey"),
+                    "type_id": type_id,
+                    "name": label,
+                    "label": label,
+                    "label_key": label_key,
+                    "sport": type_info.get("sport") if isinstance(type_info, dict) else None,
                     "value": record.get("value"),
                     "date": record.get("prStartTimeGmtFormatted") or record.get("prStartTimeGmt"),
                 }
             )
-    return {"count": len(records), "records": records}
+    return {"count": len(records), "records": records, "available": True}
 
 
 def get_health_summary(days: int = 7) -> dict[str, Any]:
