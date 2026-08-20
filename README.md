@@ -122,7 +122,7 @@ The `--allow-external-health-data` flag is required because Garmin tool results 
 |---|---|
 | `get_recovery` | Readiness, HRV, sleep, body battery, resting HR, training status if available |
 | `get_sleep` | Sleep duration and sleep score trends |
-| `get_resting_heart_rate` | Daily RHR with 7-day and 30-day trend summaries |
+| `get_resting_heart_rate` | Daily RHR with 7-day and 30-day trend summaries, up to 30 days |
 | `get_stress` | Daily stress buckets and average stress |
 | `get_recent_activities` | Recent normalized activity summaries |
 | `get_activity_detail` | One activity with training effect fields |

@@ -333,8 +333,8 @@ def get_sleep(days: int = 7) -> dict[str, Any]:
 
 
 def get_resting_heart_rate(days: int = 30) -> dict[str, Any]:
-    """Daily resting heart rate with 7-day and 30-day trend summaries."""
-    safe_days = max(1, min(days, 365))
+    """Daily resting heart rate with 7-day and 30-day trend summaries, up to 30 days."""
+    safe_days = max(1, min(days, 30))
     dates = date_range_iso(safe_days)
     client = _client()
     manager = get_manager()
@@ -879,7 +879,7 @@ TOOL_SPECS = [
         "get_resting_heart_rate",
         get_resting_heart_rate.__doc__ or "",
         get_resting_heart_rate,
-        {"days": {"type": "integer", "default": 30, "minimum": 1, "maximum": 365}},
+        {"days": {"type": "integer", "default": 30, "minimum": 1, "maximum": 30}},
     ),
     ToolSpec(
         "get_stress",

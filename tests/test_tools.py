@@ -188,6 +188,17 @@ def test_resting_heart_rate_daily_weekly_monthly_summary() -> None:
     assert len(result["daily"]) == 3
 
 
+def test_resting_heart_rate_clamps_to_30_days() -> None:
+    import mcp_garmin_connect.garmin_client as garmin_client
+
+    garmin_client._manager = FakeManager()
+
+    result = get_resting_heart_rate(days=365)
+
+    assert result["period_days"] == 30
+    assert len(result["daily"]) == 30
+
+
 def test_tool_schemas_are_objects() -> None:
     for spec in TOOL_SPECS:
         schema = tool_schema(spec)
