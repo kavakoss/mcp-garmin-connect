@@ -7,5 +7,5 @@ def test_create_server() -> None:
 
 def test_list_capabilities() -> None:
     capabilities = list_capabilities()
-    assert len(capabilities["tools"]) == 14
+    assert len(capabilities["tools"]) == 15
     assert len(capabilities["prompts"]) == 4

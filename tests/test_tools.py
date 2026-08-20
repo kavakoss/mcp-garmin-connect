@@ -10,6 +10,7 @@ from mcp_garmin_connect.tools import (
     get_personal_records,
     get_recent_activities,
     get_recent_load,
+    get_resting_heart_rate,
     get_running_summary,
     tool_schema,
 )
@@ -53,6 +54,20 @@ class FakeGarmin:
                     "prStartTimeGmtFormatted": "2999-01-02",
                 }
             ]
+        }
+
+    def get_rhr_day(self, cdate: str) -> dict[str, Any]:
+        return {
+            "allMetrics": {
+                "metricsMap": {
+                    "WELLNESS_RESTING_HEART_RATE": [
+                        {
+                            "calendarDate": cdate,
+                            "value": 50,
+                        }
+                    ]
+                }
+            }
         }
 
     display_name = "fake-user"
@@ -157,6 +172,20 @@ def test_personal_records_uses_garminconnect_singular_method() -> None:
     assert result["records"][0]["label_key"] == "pr.label.5k.run"
     assert result["records"][0]["sport"] == "RUNNING"
     assert result["records"][1]["name"] == "Fastest 10K"
+
+
+def test_resting_heart_rate_daily_weekly_monthly_summary() -> None:
+    import mcp_garmin_connect.garmin_client as garmin_client
+
+    garmin_client._manager = FakeManager()
+
+    result = get_resting_heart_rate(days=3)
+
+    assert result["period_days"] == 3
+    assert result["latest_bpm"] == 50
+    assert result["weekly_avg_bpm"] == 50
+    assert result["monthly_avg_bpm"] == 50
+    assert len(result["daily"]) == 3
 
 
 def test_tool_schemas_are_objects() -> None:
