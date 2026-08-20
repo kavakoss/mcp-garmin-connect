@@ -60,6 +60,40 @@ def _manager_call(key: str, factory: Callable[[], Any]) -> Any:
     return get_manager().cached(key, factory)
 
 
+def _extract_resting_heart_rate_bpm(raw: Any) -> int | None:
+    if not isinstance(raw, dict):
+        return None
+
+    for key in (
+        "restingHeartRate",
+        "restingHR",
+        "restingHeartRateBpm",
+        "averageRestingHeartRate",
+        "value",
+    ):
+        value = raw.get(key)
+        if isinstance(value, (int, float)):
+            return int(round(value))
+
+    try:
+        metrics = raw["allMetrics"]["metricsMap"]["WELLNESS_RESTING_HEART_RATE"]
+    except (KeyError, TypeError):
+        metrics = None
+
+    if isinstance(metrics, list):
+        for metric in metrics:
+            if not isinstance(metric, dict):
+                continue
+            value = metric.get("value")
+            if isinstance(value, (int, float)):
+                return int(round(value))
+    return None
+
+
+def _avg(values: list[int | float]) -> float | None:
+    return round_number(sum(values) / len(values), 1) if values else None
+
+
 def _personal_record_type_id(value: Any) -> int | None:
     if isinstance(value, int):
         return value
@@ -142,7 +176,7 @@ def get_recovery() -> dict[str, Any]:
             f_body = ex.submit(
                 manager.safe_call, lambda: client.get_body_battery(dates[-1], today)
             )
-            f_rhr = ex.submit(manager.safe_call, lambda: client.get_resting_heart_rate(today))
+            f_rhr = ex.submit(manager.safe_call, lambda: client.get_rhr_day(today))
             readiness_raw = f_readiness.result()
             status_raw = f_status.result()
             hrv_raw = {day: future.result() for day, future in f_hrv.items()}
@@ -215,15 +249,7 @@ def get_recovery() -> dict[str, Any]:
                 "end_of_day": latest.get("endOfDayBatteryLevel"),
             }
 
-        resting_heart_rate = None
-        if isinstance(rhr_raw, dict):
-            try:
-                metrics = rhr_raw["allMetrics"]["metricsMap"]["WELLNESS_RESTING_HEART_RATE"]
-                if metrics:
-                    value = metrics[0].get("value")
-                    resting_heart_rate = int(value) if isinstance(value, (int, float)) else None
-            except (KeyError, TypeError, IndexError):
-                resting_heart_rate = None
+        resting_heart_rate = _extract_resting_heart_rate_bpm(rhr_raw)
 
         training_status = None
         if isinstance(status_raw, dict):
@@ -304,6 +330,52 @@ def get_sleep(days: int = 7) -> dict[str, Any]:
         }
 
     return _manager_call(f"sleep:{len(dates)}:{dates[0]}", fetch)
+
+
+def get_resting_heart_rate(days: int = 30) -> dict[str, Any]:
+    """Daily resting heart rate with 7-day and 30-day trend summaries."""
+    safe_days = max(1, min(days, 365))
+    dates = date_range_iso(safe_days)
+    client = _client()
+    manager = get_manager()
+
+    def fetch() -> dict[str, Any]:
+        daily = []
+        for day in dates:
+            raw = manager.safe_call(lambda d=day: client.get_rhr_day(d), default={})
+            bpm = _extract_resting_heart_rate_bpm(raw)
+            daily.append({"date": day, "bpm": bpm})
+
+        values = [item["bpm"] for item in daily if isinstance(item.get("bpm"), int)]
+        week_values = [
+            item["bpm"] for item in daily[:7] if isinstance(item.get("bpm"), int)
+        ]
+        month_values = [
+            item["bpm"] for item in daily[:30] if isinstance(item.get("bpm"), int)
+        ]
+        latest = next((item for item in daily if isinstance(item.get("bpm"), int)), None)
+        latest_bpm = latest["bpm"] if latest else None
+        weekly_avg = _avg(week_values)
+        monthly_avg = _avg(month_values)
+
+        return {
+            "period_days": safe_days,
+            "latest": latest,
+            "latest_bpm": latest_bpm,
+            "weekly_avg_bpm": weekly_avg,
+            "monthly_avg_bpm": monthly_avg,
+            "min_bpm": min(values) if values else None,
+            "max_bpm": max(values) if values else None,
+            "delta_latest_vs_weekly_avg_bpm": round_number(latest_bpm - weekly_avg, 1)
+            if isinstance(latest_bpm, int) and isinstance(weekly_avg, (int, float))
+            else None,
+            "delta_latest_vs_monthly_avg_bpm": round_number(latest_bpm - monthly_avg, 1)
+            if isinstance(latest_bpm, int) and isinstance(monthly_avg, (int, float))
+            else None,
+            "daily": daily,
+        }
+
+    return _manager_call(f"resting_heart_rate:{safe_days}:{dates[0]}", fetch)
 
 
 def get_stress(days: int = 7) -> dict[str, Any]:
@@ -756,6 +828,7 @@ def get_health_summary(days: int = 7) -> dict[str, Any]:
         "date": today_iso(),
         "recovery": get_recovery(),
         "sleep": get_sleep(days),
+        "resting_heart_rate": get_resting_heart_rate(min(max(days, 1), 30)),
         "stress": get_stress(days),
     }
 
@@ -765,6 +838,7 @@ def get_full_snapshot(activity_days: int = 14, load_days: int = 28) -> dict[str,
     sections: dict[str, Callable[[], dict[str, Any]]] = {
         "recovery": get_recovery,
         "sleep": lambda: get_sleep(7),
+        "resting_heart_rate": lambda: get_resting_heart_rate(30),
         "stress": lambda: get_stress(7),
         "recent_activities": lambda: get_recent_activities(activity_days),
         "recent_load": lambda: get_recent_load(load_days),
@@ -800,6 +874,12 @@ TOOL_SPECS = [
         get_sleep.__doc__ or "",
         get_sleep,
         {"days": {"type": "integer", "default": 7, "minimum": 1, "maximum": 30}},
+    ),
+    ToolSpec(
+        "get_resting_heart_rate",
+        get_resting_heart_rate.__doc__ or "",
+        get_resting_heart_rate,
+        {"days": {"type": "integer", "default": 30, "minimum": 1, "maximum": 365}},
     ),
     ToolSpec(
         "get_stress",
