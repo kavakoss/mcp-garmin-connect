@@ -73,8 +73,16 @@ class GarminClientManager:
         if self._client is None:
             with self._login_lock:
                 if self._client is None:
-                    self._client = self.login(allow_interactive_mfa=False)
-                    log.info("Garmin client authenticated with token cache: %s", self.token_store)
+                    if self.settings.garmin_demo:
+                        from .demo import DemoGarmin
+
+                        self._client = DemoGarmin()
+                        log.info("Garmin demo mode active: fictional data, no credentials used")
+                    else:
+                        self._client = self.login(allow_interactive_mfa=False)
+                        log.info(
+                            "Garmin client authenticated with token cache: %s", self.token_store
+                        )
         return self._client
 
     def cached(self, key: str, factory: Callable[[], Any]) -> Any:

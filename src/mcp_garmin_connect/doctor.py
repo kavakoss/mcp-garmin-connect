@@ -27,21 +27,35 @@ def run_checks(include_live: bool = False) -> list[Check]:
             importlib.util.find_spec("garminconnect") is not None,
             "garminconnect installed",
         ),
-        Check("garmin-email", bool(settings.garmin_email), "GARMIN_EMAIL configured"),
-        Check("garmin-password", bool(settings.garmin_password), "GARMIN_PASSWORD configured"),
-        Check(
-            "token-store",
-            os.path.isdir(settings.garmin_token_store),
-            f"Token store: {settings.garmin_token_store}",
-        ),
-        Check(
-            "token-cache",
-            manager.token_cache_present(),
-            "Garmin token cache present"
-            if manager.token_cache_present()
-            else "Run garmin-mcp login",
-        ),
     ]
+    if settings.garmin_demo:
+        checks.append(
+            Check("demo-mode", True, "GARMIN_DEMO=1: serving fictional sample data")
+        )
+        include_live = False
+    else:
+        checks.extend(
+            [
+                Check("garmin-email", bool(settings.garmin_email), "GARMIN_EMAIL configured"),
+                Check(
+                    "garmin-password",
+                    bool(settings.garmin_password),
+                    "GARMIN_PASSWORD configured",
+                ),
+                Check(
+                    "token-store",
+                    os.path.isdir(settings.garmin_token_store),
+                    f"Token store: {settings.garmin_token_store}",
+                ),
+                Check(
+                    "token-cache",
+                    manager.token_cache_present(),
+                    "Garmin token cache present"
+                    if manager.token_cache_present()
+                    else "Run garmin-mcp login",
+                ),
+            ]
+        )
     for provider_name, spec in provider_specs(settings).items():
         checks.append(
             Check(

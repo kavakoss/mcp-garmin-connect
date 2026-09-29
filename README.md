@@ -10,6 +10,16 @@
 
 Use the same local Garmin tools from any MCP client — Claude Desktop, Claude Code, Cursor, Continue, Hermes, opencode — or from provider-backed demo agents using DeepSeek, OpenAI, Claude, OpenRouter, or Gemini.
 
+## See It In Action
+
+![opencode checking Garmin recovery through mcp-garmin-connect](docs/assets/demo.gif)
+
+Recorded with `garmin-mcp serve --demo`, which serves deterministic **fictional** sample data — no Garmin credentials and no real health data involved:
+
+```bash
+uvx mcp-garmin-connect serve --demo
+```
+
 ## Works With Any MCP Harness
 
 This server implements standard MCP over `stdio` and Streamable HTTP, so there is no harness-specific adapter to maintain. If your tool speaks MCP, it works:
@@ -36,6 +46,7 @@ The core server is provider-neutral. DeepSeek, OpenAI, Claude, OpenRouter, and G
 
 - **Published on PyPI** — run it with `uvx mcp-garmin-connect`, no clone or manual install.
 - **15 Garmin tools and 4 prompt templates** for training and recovery analysis.
+- **Demo mode** — `serve --demo` runs on fictional sample data with no credentials, for try-outs and recordings.
 - **Local MCP server** over `stdio` or Streamable HTTP (`/mcp`).
 - **Endpoint-level TTL cache with single-flight factories** — concurrent tool calls share one Garmin request instead of stampeding the API.
 - **Global request concurrency cap** so parallel snapshots stay within a safe request rate.
@@ -199,6 +210,7 @@ All settings come from environment variables (`.env` is loaded automatically).
 | `GARMIN_TOKEN_STORE` | `~/.garminconnect` | Directory for the OAuth token cache |
 | `GARMIN_CACHE_TTL_SECONDS` | `120` | TTL for cached Garmin endpoint responses |
 | `GARMIN_MAX_CONCURRENCY` | `6` | Global cap on in-flight Garmin requests |
+| `GARMIN_DEMO` | unset | `1` serves fictional sample data (same as `serve --demo`) |
 
 Provider bridge variables (optional): `DEEPSEEK_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY`, `GEMINI_API_KEY`, plus the matching `*_BASE_URL` and `*_MODEL` overrides.
 

@@ -23,6 +23,10 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
+def _env_flag(name: str) -> bool:
+    return os.getenv(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 @dataclass(frozen=True)
 class Settings:
     garmin_email: str | None
@@ -45,6 +49,7 @@ class Settings:
     gemini_model: str
     cache_ttl_seconds: int
     garmin_max_concurrency: int = 6
+    garmin_demo: bool = False
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -78,6 +83,7 @@ class Settings:
             gemini_model=os.getenv("GEMINI_MODEL", "gemini-3.6-flash"),
             cache_ttl_seconds=max(0, _env_int("GARMIN_CACHE_TTL_SECONDS", 120)),
             garmin_max_concurrency=max(1, _env_int("GARMIN_MAX_CONCURRENCY", 6)),
+            garmin_demo=_env_flag("GARMIN_DEMO"),
         )
 
     def require_garmin_credentials(self) -> tuple[str, str]:

@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import sys
 
 from .config import Settings
@@ -23,6 +24,11 @@ def main(argv: list[str] | None = None) -> None:
     serve.add_argument("--transport", choices=["stdio", "http"], default="stdio")
     serve.add_argument("--host", default="127.0.0.1")
     serve.add_argument("--port", type=int, default=8765)
+    serve.add_argument(
+        "--demo",
+        action="store_true",
+        help="Serve fictional sample data instead of Garmin Connect (no credentials needed).",
+    )
 
     doctor = sub.add_parser("doctor", help="Check local configuration.")
     doctor.add_argument("--live", action="store_true", help="Attempt a live Garmin login.")
@@ -49,6 +55,8 @@ def main(argv: list[str] | None = None) -> None:
     if args.command == "login":
         _login()
     elif args.command == "serve":
+        if args.demo:
+            os.environ["GARMIN_DEMO"] = "1"
         run_server(transport=args.transport, host=args.host, port=args.port)
     elif args.command == "doctor":
         _doctor(include_live=args.live)
