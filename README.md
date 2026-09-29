@@ -1,6 +1,7 @@
 ![mcp-garmin-connect](docs/assets/banner.svg)
 
 [![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![PyPI](https://img.shields.io/pypi/v/mcp-garmin-connect)](https://pypi.org/project/mcp-garmin-connect/)
 [![MCP](https://img.shields.io/badge/MCP-compatible-6D28D9)](https://modelcontextprotocol.io/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![CI](https://github.com/kavakoss/mcp-garmin-connect/actions/workflows/ci.yml/badge.svg)](https://github.com/kavakoss/mcp-garmin-connect/actions/workflows/ci.yml)
@@ -33,6 +34,7 @@ The core server is provider-neutral. DeepSeek, OpenAI, Claude, OpenRouter, and G
 
 ## Features
 
+- **Published on PyPI** — run it with `uvx mcp-garmin-connect`, no clone or manual install.
 - **15 Garmin tools and 4 prompt templates** for training and recovery analysis.
 - **Local MCP server** over `stdio` or Streamable HTTP (`/mcp`).
 - **Endpoint-level TTL cache with single-flight factories** — concurrent tool calls share one Garmin request instead of stampeding the API.
@@ -44,7 +46,20 @@ The core server is provider-neutral. DeepSeek, OpenAI, Claude, OpenRouter, and G
 
 ## Quick Start
 
+### Option A — published package (no clone needed)
+
 ```bash
+uvx mcp-garmin-connect login
+uvx mcp-garmin-connect serve --transport stdio
+```
+
+`uvx` runs the latest PyPI release in an isolated environment. Export `GARMIN_EMAIL` / `GARMIN_PASSWORD` (or keep a `.env` in the directory you launch it from) before the first `login`.
+
+### Option B — from source
+
+```bash
+git clone https://github.com/kavakoss/mcp-garmin-connect
+cd mcp-garmin-connect
 uv sync
 cp .env.example .env
 ```
@@ -81,7 +96,24 @@ uv run garmin-mcp serve --transport http --host 127.0.0.1 --port 8765
 
 ## MCP Client Setup
 
-Generic `stdio` config:
+Generic `stdio` config using the published package (`uvx`):
+
+```json
+{
+  "mcpServers": {
+    "garmin": {
+      "command": "uvx",
+      "args": ["mcp-garmin-connect", "serve", "--transport", "stdio"],
+      "env": {
+        "GARMIN_EMAIL": "you@example.com",
+        "GARMIN_PASSWORD": "your-password"
+      }
+    }
+  }
+}
+```
+
+From a local checkout, replace `command`/`args` with:
 
 ```json
 {
@@ -101,6 +133,8 @@ Generic `stdio` config:
   }
 }
 ```
+
+With the local checkout, credentials are also read from the repo's `.env` file, so the `env` block is optional.
 
 [opencode](https://opencode.ai) (`opencode.json`):
 
