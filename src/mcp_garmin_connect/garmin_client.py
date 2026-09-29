@@ -4,6 +4,7 @@ import logging
 import os
 from collections.abc import Callable
 from datetime import date, timedelta
+from threading import BoundedSemaphore, Lock
 from typing import Any
 
 from .cache import TTLCache
@@ -23,6 +24,8 @@ class GarminClientManager:
         self.settings = settings or Settings.from_env()
         self.cache = TTLCache(self.settings.cache_ttl_seconds)
         self._client: Any = None
+        self._login_lock = Lock()
+        self._request_semaphore = BoundedSemaphore(max(1, self.settings.garmin_max_concurrency))
 
     @property
     def token_store(self) -> str:
@@ -68,21 +71,41 @@ class GarminClientManager:
 
     def client(self) -> Any:
         if self._client is None:
-            self._client = self.login(allow_interactive_mfa=False)
-            log.info("Garmin client authenticated with token cache: %s", self.token_store)
+            with self._login_lock:
+                if self._client is None:
+                    self._client = self.login(allow_interactive_mfa=False)
+                    log.info("Garmin client authenticated with token cache: %s", self.token_store)
         return self._client
 
     def cached(self, key: str, factory: Callable[[], Any]) -> Any:
         return self.cache.get_or_set(key, factory)
 
-    def safe_call(self, fn: Callable[[], Any], default: Any = None) -> Any:
+    def safe_call(
+        self,
+        fn: Callable[[], Any],
+        default: Any = None,
+        *,
+        errors: list[dict[str, str]] | None = None,
+        label: str | None = None,
+    ) -> Any:
+        """Run one Garmin endpoint, capping global concurrency.
+
+        Auth/connection/rate-limit failures raise mapped package errors. Other
+        endpoint failures are logged, recorded in ``errors`` when provided, and
+        replaced with ``default`` so composite tools can report partial data
+        instead of silently returning nulls.
+        """
         try:
-            return fn()
+            with self._request_semaphore:
+                return fn()
         except Exception as exc:
             name = type(exc).__name__
             if name in _AUTH_ERROR_NAMES | _CONNECTION_ERROR_NAMES | _RATE_LIMIT_ERROR_NAMES:
                 raise self._map_error(exc) from exc
-            log.debug("Garmin optional endpoint failed (%s): %s", name, exc)
+            source = label or name
+            log.warning("Garmin endpoint failed (%s): %s", source, exc)
+            if errors is not None:
+                errors.append({"source": source, "error": f"{name}: {exc}"})
             return default
 
     def _map_error(self, exc: Exception) -> Exception:
@@ -100,18 +123,22 @@ class GarminClientManager:
 
 
 _manager: GarminClientManager | None = None
+_manager_lock = Lock()
 
 
 def get_manager() -> GarminClientManager:
     global _manager
     if _manager is None:
-        _manager = GarminClientManager()
+        with _manager_lock:
+            if _manager is None:
+                _manager = GarminClientManager()
     return _manager
 
 
 def reset_manager(settings: Settings | None = None) -> GarminClientManager:
     global _manager
-    _manager = GarminClientManager(settings=settings)
+    with _manager_lock:
+        _manager = GarminClientManager(settings=settings)
     return _manager
 
 

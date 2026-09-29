@@ -604,7 +604,7 @@ wheels = [
 
 [[package]]
 name = "mcp-garmin-connect"
-version = "0.1.0"
+version = "0.2.0"
 source = { editable = "." }
 dependencies = [
     { name = "curl-cffi" },
@@ -612,6 +612,7 @@ dependencies = [
     { name = "garminconnect", version = "0.3.10", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "httpx" },
     { name = "mcp" },
+    { name = "pydantic" },
     { name = "python-dotenv" },
 ]
 
@@ -628,6 +629,7 @@ requires-dist = [
     { name = "garminconnect", specifier = ">=0.3,<1" },
     { name = "httpx", specifier = ">=0.27,<1" },
     { name = "mcp", specifier = ">=1.2,<2" },
+    { name = "pydantic", specifier = ">=2,<3" },
     { name = "python-dotenv", specifier = ">=1.0,<2" },
 ]
 

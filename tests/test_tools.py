@@ -2,7 +2,10 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
+
 from mcp_garmin_connect.config import Settings
+from mcp_garmin_connect.errors import GarminAuthError
 from mcp_garmin_connect.garmin_client import GarminClientManager, reset_manager
 from mcp_garmin_connect.tools import (
     TOOL_SPECS,
@@ -12,6 +15,7 @@ from mcp_garmin_connect.tools import (
     get_recent_load,
     get_resting_heart_rate,
     get_running_summary,
+    get_zones,
     tool_schema,
 )
 
@@ -71,6 +75,17 @@ class FakeGarmin:
         }
 
     display_name = "fake-user"
+
+    def get_user_profile(self) -> dict[str, Any]:
+        return {
+            "userData": {
+                "gender": "MALE",
+                "birthDate": "2005-07-11",
+                "weight": 73000,
+                "heartRateZones": [{"zone": 1, "low": 100, "high": 120}],
+                "lactateThresholdHeartRate": 165,
+            }
+        }
 
     def connectapi(self, url: str) -> list[dict[str, Any]]:
         assert url == "/personalrecord-service/personalrecordtype/prtypes/fake-user"
@@ -204,3 +219,43 @@ def test_tool_schemas_are_objects() -> None:
         schema = tool_schema(spec)
         assert schema["type"] == "object"
         assert "properties" in schema
+
+
+def test_get_zones_trims_profile_pii() -> None:
+    import mcp_garmin_connect.garmin_client as garmin_client
+
+    garmin_client._manager = FakeManager()
+
+    result = get_zones()
+
+    assert result["available"] is True
+    assert "heartRateZones" in result["zones"]
+    assert "lactateThresholdHeartRate" in result["zones"]
+    assert "gender" not in result["zones"]
+    assert "birthDate" not in result["zones"]
+    assert "weight" not in result["zones"]
+
+
+def test_safe_call_records_endpoint_errors() -> None:
+    manager = FakeManager()
+    errors: list[dict[str, str]] = []
+
+    result = manager.safe_call(
+        lambda: (_ for _ in ()).throw(ValueError("bad payload")),
+        default=None,
+        errors=errors,
+        label="sleep:2999-01-01",
+    )
+
+    assert result is None
+    assert errors == [{"source": "sleep:2999-01-01", "error": "ValueError: bad payload"}]
+
+
+def test_safe_call_maps_auth_errors() -> None:
+    manager = FakeManager()
+
+    class GarminConnectAuthenticationError(Exception):
+        pass
+
+    with pytest.raises(GarminAuthError):
+        manager.safe_call(lambda: (_ for _ in ()).throw(GarminConnectAuthenticationError()))
