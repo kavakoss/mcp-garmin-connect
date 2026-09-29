@@ -9,6 +9,22 @@
 
 Use the same local Garmin tools from any MCP client — Claude Desktop, Claude Code, Cursor, Continue, Hermes, opencode — or from provider-backed demo agents using DeepSeek, OpenAI, Claude, OpenRouter, or Gemini.
 
+## Works With Any MCP Harness
+
+This server implements standard MCP over `stdio` and Streamable HTTP, so there is no harness-specific adapter to maintain. If your tool speaks MCP, it works:
+
+| Harness | Connection |
+|---|---|
+| Claude Code / Claude Desktop | `mcpServers` stdio config |
+| Codex CLI | MCP server config |
+| Gemini CLI | MCP server config |
+| Cursor, Windsurf, Zed, VS Code Copilot, Continue | MCP server settings (stdio or HTTP) |
+| opencode | `mcp` block in `opencode.json` |
+| Hermes | stdio or HTTP |
+| Custom agents, web bots, scripts | Streamable HTTP at `http://127.0.0.1:8765/mcp` |
+
+Any client that supports MCP over `stdio` or Streamable HTTP can use every tool and prompt in this server with no extra code.
+
 ## Why This Exists
 
 Most fitness advice from LLMs is generic. This server lets an LLM inspect your real Garmin Connect data first, then answer with context from your activities, recovery markers, HRV, sleep, stress, VO2 Max, and running history.
