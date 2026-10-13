@@ -182,6 +182,7 @@ Per-client examples (Claude Desktop, Claude Code, Cursor, Continue, Hermes, gene
 | `get_stress` | Daily stress buckets and average stress |
 | `get_recent_activities` | Recent normalized activity summaries |
 | `get_activity_detail` | One activity with training effect fields |
+| `get_activity_splits` | Per-lap splits with pace, HR, cadence, elevation and HR drift |
 | `get_recent_load` | Volume by sport based on recent activities |
 | `get_training_load` | Native Garmin Training Load when the device/account exposes it |
 | `get_fitness` | VO2 Max, FTP, and race predictions |

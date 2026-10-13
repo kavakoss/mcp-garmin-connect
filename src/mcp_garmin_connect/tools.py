@@ -12,6 +12,7 @@ from pydantic import Field
 from .garmin_client import date_range_iso, get_manager, today_iso
 from .normalizers import (
     activity_type_key,
+    format_duration,
     normalize_activity,
     round_number,
     sport_bucket,
@@ -631,6 +632,145 @@ def get_activity_detail(activity_id: int) -> dict[str, Any]:
     }
 
 
+def _number(value: Any) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value)
+
+
+def _normalize_lap(lap: dict[str, Any], index: int) -> dict[str, Any]:
+    """Normalize one Garmin lap/split entry. Missing values stay null, never 0."""
+    distance_m = _number(lap.get("distance"))
+    duration_s = _number(lap.get("duration"))
+    if duration_s is None:
+        duration_s = _number(lap.get("movingDuration"))
+    speed = _number(lap.get("averageSpeed"))
+    if speed is None:
+        speed = _number(lap.get("averageMovingSpeed"))
+    pace_seconds = 1000.0 / speed if speed and speed > 0 else None
+    if pace_seconds is None and distance_m and duration_s and distance_m > 0:
+        pace_seconds = duration_s / (distance_m / 1000)
+    hr_avg = _number(lap.get("averageHR"))
+    hr_max = _number(lap.get("maxHR"))
+    cadence = _number(
+        lap.get("averageRunCadence")
+        or lap.get("averageRunningCadenceInStepsPerMinute")
+        or lap.get("averageBikingCadenceInRevPerMinute")
+    )
+    return {
+        "index": index,
+        "distance_km": round_number(distance_m / 1000, 2) if distance_m is not None else None,
+        "duration": format_duration(duration_s),
+        "duration_seconds": int(duration_s) if duration_s is not None else None,
+        "pace": _format_pace(pace_seconds),
+        "pace_seconds_per_km": round_number(pace_seconds, 1),
+        "hr_avg": int(hr_avg) if hr_avg is not None else None,
+        "hr_max": int(hr_max) if hr_max is not None else None,
+        "cadence": round_number(cadence, 0),
+        "elevation_gain_m": round_number(_number(lap.get("elevationGain")), 1),
+    }
+
+
+def _hr_drift(laps: list[dict[str, Any]]) -> tuple[dict[str, Any] | None, str | None]:
+    """Compare first-half to second-half average HR. Returns (drift, unavailable_reason)."""
+    if len(laps) < 4:
+        return None, f"needs at least 4 laps, got {len(laps)}"
+    hr_values = [lap.get("hr_avg") for lap in laps]
+    if any(not isinstance(value, (int, float)) for value in hr_values):
+        return None, "not every lap reports an average heart rate"
+    middle = len(laps) // 2
+    first_avg = sum(hr_values[:middle]) / middle
+    second_avg = sum(hr_values[middle:]) / (len(laps) - middle)
+    if first_avg <= 0:
+        return None, "first-half average heart rate is not usable"
+    drift_pct = (second_avg - first_avg) / first_avg * 100
+    if drift_pct <= 3:
+        interpretation = "stabil"
+    elif drift_pct <= 5:
+        interpretation = "drift ringan"
+    else:
+        interpretation = "drift tinggi (cari penyebab: panas/dehidrasi/kelelahan)"
+    return {
+        "first_half_avg_hr": round_number(first_avg, 0),
+        "second_half_avg_hr": round_number(second_avg, 0),
+        "drift_pct": round(drift_pct, 1),
+        "interpretation": interpretation,
+    }, None
+
+
+def get_activity_splits(activity_id: int) -> dict[str, Any]:
+    """Per-lap splits for one activity: pace, HR, cadence, elevation and HR drift."""
+    client = _client()
+    manager = get_manager()
+    errors: ErrorList = []
+    raw = manager.cached(
+        f"activity_splits:{activity_id}",
+        lambda: manager.safe_call(
+            lambda: client.get_activity_splits(activity_id),
+            default={},
+            errors=errors,
+            label=f"splits:{activity_id}",
+        ),
+    )
+    lap_dtos = raw.get("lapDTOs") if isinstance(raw, dict) else None
+    if not isinstance(lap_dtos, list):
+        return {
+            "activity_id": activity_id,
+            "error": "splits not found or inaccessible",
+            **_errors_payload(errors),
+        }
+    laps = [
+        _normalize_lap(lap, index)
+        for index, lap in enumerate(lap_dtos, start=1)
+        if isinstance(lap, dict)
+    ]
+    if not laps:
+        return {
+            "activity_id": activity_id,
+            "error": "splits not found or inaccessible",
+            **_errors_payload(errors),
+        }
+
+    distances = [lap["distance_km"] for lap in laps]
+    durations = [lap["duration_seconds"] for lap in laps]
+    total_distance_km = (
+        round_number(sum(distances), 2) if all(value is not None for value in distances) else None
+    )
+    total_seconds = sum(durations) if all(value is not None for value in durations) else None
+    hr_pairs = [
+        (lap["hr_avg"], lap["duration_seconds"]) for lap in laps if lap["hr_avg"] is not None
+    ]
+    if not hr_pairs:
+        avg_hr = None
+    elif all(seconds for _, seconds in hr_pairs):
+        weight = sum(seconds for _, seconds in hr_pairs)
+        avg_hr = round_number(sum(hr * seconds for hr, seconds in hr_pairs) / weight, 0)
+    else:
+        avg_hr = round_number(sum(hr for hr, _ in hr_pairs) / len(hr_pairs), 0)
+    cadences = [lap["cadence"] for lap in laps if lap["cadence"] is not None]
+    elevations = [lap["elevation_gain_m"] for lap in laps if lap["elevation_gain_m"] is not None]
+    hr_drift, hr_drift_note = _hr_drift(laps)
+    summary = {
+        "distance_km": total_distance_km,
+        "duration": format_duration(total_seconds),
+        "avg_pace": _format_pace(total_seconds / total_distance_km)
+        if total_seconds and total_distance_km
+        else None,
+        "avg_hr": avg_hr,
+        "avg_cadence": round_number(sum(cadences) / len(cadences), 0) if cadences else None,
+        "elevation_gain_m": round_number(sum(elevations), 1) if elevations else None,
+    }
+    return {
+        "activity_id": activity_id,
+        "lap_count": len(laps),
+        "laps": laps,
+        "summary": summary,
+        "hr_drift": hr_drift,
+        **({"hr_drift_note": hr_drift_note} if hr_drift_note else {}),
+        **_errors_payload(errors),
+    }
+
+
 def _run_activities(days: int, errors: ErrorList | None = None) -> list[dict[str, Any]]:
     return [
         activity
@@ -1080,6 +1220,12 @@ TOOL_SPECS = [
         "get_activity_detail",
         get_activity_detail.__doc__ or "",
         get_activity_detail,
+        {"activity_id": {"type": "integer"}},
+    ),
+    ToolSpec(
+        "get_activity_splits",
+        get_activity_splits.__doc__ or "",
+        get_activity_splits,
         {"activity_id": {"type": "integer"}},
     ),
     ToolSpec(

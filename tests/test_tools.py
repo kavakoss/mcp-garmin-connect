@@ -9,6 +9,8 @@ from mcp_garmin_connect.errors import GarminAuthError
 from mcp_garmin_connect.garmin_client import GarminClientManager, reset_manager
 from mcp_garmin_connect.tools import (
     TOOL_SPECS,
+    _hr_drift,
+    get_activity_splits,
     get_monthly_running_stats,
     get_personal_records,
     get_recent_activities,
@@ -72,6 +74,92 @@ class FakeGarmin:
                     ]
                 }
             }
+        }
+
+    def get_activity_splits(self, activity_id: int) -> dict[str, Any]:
+        if activity_id == 2:
+            return {
+                "activityId": 2,
+                "lapDTOs": [
+                    {
+                        "distance": 1000.0,
+                        "duration": 500.0,
+                        "averageSpeed": 2.0,
+                        "averageHR": 140,
+                        "maxHR": 148,
+                        "averageRunCadence": 158,
+                        "elevationGain": 4,
+                    },
+                    {
+                        "distance": 1000.0,
+                        "duration": 520.0,
+                        "averageSpeed": 1.9230769,
+                        "averageHR": 146,
+                        "maxHR": 152,
+                        "averageRunCadence": 156,
+                    },
+                ],
+            }
+        if activity_id == 3:
+            return {}
+        return {
+            "activityId": 1,
+            "lapDTOs": [
+                {
+                    "distance": 1000.0,
+                    "duration": 480.0,
+                    "averageSpeed": 2.0833333,
+                    "averageHR": 138,
+                    "maxHR": 145,
+                    "averageRunCadence": 162,
+                    "elevationGain": 3,
+                },
+                {
+                    "distance": 1000.0,
+                    "duration": 486.0,
+                    "averageSpeed": 2.0576131,
+                    "averageHR": 141,
+                    "maxHR": 149,
+                    "averageRunCadence": 160,
+                    "elevationGain": 5,
+                },
+                {
+                    "distance": 1000.0,
+                    "duration": 492.0,
+                    "averageSpeed": 2.0325203,
+                    "averageHR": 145,
+                    "maxHR": 153,
+                    "averageRunCadence": 159,
+                    "elevationGain": 2,
+                },
+                {
+                    "distance": 1000.0,
+                    "duration": 498.0,
+                    "averageSpeed": 2.0080321,
+                    "averageHR": 150,
+                    "maxHR": 158,
+                    "averageRunCadence": 157,
+                    "elevationGain": 6,
+                },
+                {
+                    "distance": 1000.0,
+                    "duration": 504.0,
+                    "averageSpeed": 1.9841270,
+                    "averageHR": 156,
+                    "maxHR": 163,
+                    "averageRunCadence": 155,
+                    "elevationGain": 1,
+                },
+                {
+                    "distance": 1000.0,
+                    "duration": 512.0,
+                    "averageSpeed": 1.9531250,
+                    "averageHR": 161,
+                    "maxHR": 168,
+                    "averageRunCadence": 153,
+                    "elevationGain": 4,
+                },
+            ],
         }
 
     display_name = "fake-user"
@@ -149,6 +237,96 @@ def test_recent_load_aggregates_by_sport() -> None:
 
     assert result["by_sport"]["run"]["total_km"] == 5.0
     assert result["by_sport"]["bike"]["total_hours"] == 1.0
+
+
+def test_activity_splits_normalizes_laps_and_hr_drift() -> None:
+    import mcp_garmin_connect.garmin_client as garmin_client
+
+    garmin_client._manager = FakeManager()
+
+    result = get_activity_splits(activity_id=1)
+
+    assert result["lap_count"] == 6
+    assert "errors" not in result
+    first = result["laps"][0]
+    assert first["index"] == 1
+    assert first["distance_km"] == 1.0
+    assert first["duration"] == "8:00"
+    assert first["pace"] == "8:00/km"
+    assert first["pace_seconds_per_km"] == 480.0
+    assert first["hr_avg"] == 138
+    assert first["hr_max"] == 145
+    assert first["cadence"] == 162
+    assert first["elevation_gain_m"] == 3.0
+    assert result["laps"][1]["elevation_gain_m"] == 5.0
+    assert result["laps"][1]["pace"] == "8:06/km"
+
+    assert result["summary"]["distance_km"] == 6.0
+    assert result["summary"]["duration"] == "49:32"
+    assert result["summary"]["avg_pace"] == "8:15/km"
+    assert result["summary"]["avg_hr"] == 149.0
+    assert result["summary"]["avg_cadence"] == 158.0
+    assert result["summary"]["elevation_gain_m"] == 21.0
+
+    drift = result["hr_drift"]
+    assert drift["first_half_avg_hr"] == 141.0
+    assert drift["second_half_avg_hr"] == 156.0
+    assert drift["drift_pct"] == 10.1
+    assert drift["interpretation"].startswith("drift tinggi")
+    assert "hr_drift_note" not in result
+
+
+def test_activity_splits_reports_when_hr_drift_is_unavailable() -> None:
+    import mcp_garmin_connect.garmin_client as garmin_client
+
+    garmin_client._manager = FakeManager()
+
+    result = get_activity_splits(activity_id=2)
+
+    assert result["lap_count"] == 2
+    assert result["laps"][0]["pace"] == "8:20/km"
+    assert result["laps"][1]["elevation_gain_m"] is None
+    assert result["summary"]["distance_km"] == 2.0
+    assert result["summary"]["duration"] == "17:00"
+    assert result["summary"]["elevation_gain_m"] == 4.0
+    assert result["hr_drift"] is None
+    assert result["hr_drift_note"] == "needs at least 4 laps, got 2"
+
+
+def test_activity_splits_without_data_returns_error() -> None:
+    import mcp_garmin_connect.garmin_client as garmin_client
+
+    garmin_client._manager = FakeManager()
+
+    result = get_activity_splits(activity_id=3)
+
+    assert result["activity_id"] == 3
+    assert result["error"] == "splits not found or inaccessible"
+
+
+@pytest.mark.parametrize(
+    ("hr_values", "expected"),
+    [
+        ([140, 141, 140, 141], "stabil"),
+        ([140, 141, 144, 146], "drift ringan"),
+        ([140, 145, 155, 160], "drift tinggi (cari penyebab: panas/dehidrasi/kelelahan)"),
+    ],
+)
+def test_hr_drift_interpretation_thresholds(hr_values: list[int], expected: str) -> None:
+    laps = [{"hr_avg": value} for value in hr_values]
+
+    drift, note = _hr_drift(laps)
+
+    assert note is None
+    assert drift is not None
+    assert drift["interpretation"] == expected
+
+
+def test_hr_drift_needs_all_laps() -> None:
+    drift, note = _hr_drift([{"hr_avg": 140}, {"hr_avg": 145}, {"hr_avg": 150}, {"hr_avg": None}])
+
+    assert drift is None
+    assert note == "not every lap reports an average heart rate"
 
 
 def test_running_summary() -> None:
