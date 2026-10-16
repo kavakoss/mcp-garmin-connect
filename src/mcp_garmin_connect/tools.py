@@ -284,6 +284,31 @@ def _personal_record_label_key(value: Any) -> str | None:
     return None
 
 
+def _personal_record_value_unit(label: str | None) -> str | None:
+    """Garmin mixes types inside `value`, depending on the record type.
+
+    Durations arrive as "h:mm:ss" strings, distances and elevation as numbers in
+    metres, power in watts, steps/streaks as plain counts. Without this, callers
+    cannot tell whether 3000 means 3 km or 50 minutes (same class of bug as #3).
+    """
+    if not label:
+        return None
+    lowered = label.lower()
+    if lowered.startswith("fastest"):
+        return "duration"
+    if "power" in lowered:
+        return "watts"
+    if lowered.startswith("longest run") or lowered.startswith("longest ride"):
+        return "distance_m"
+    if "elevation" in lowered:
+        return "elevation_m"
+    if "steps" in lowered:
+        return "steps"
+    if "streak" in lowered:
+        return "days"
+    return None
+
+
 def _personal_record_label(label_key: str | None, type_id: int | None) -> str | None:
     if label_key:
         if label_key in _KNOWN_PR_LABELS_BY_KEY:
@@ -1155,6 +1180,7 @@ def get_personal_records() -> dict[str, Any]:
                     "label_key": label_key,
                     "sport": type_info.get("sport") if isinstance(type_info, dict) else None,
                     "value": record.get("value"),
+                    "value_unit": _personal_record_value_unit(label),
                     "date": record.get("prStartTimeGmtFormatted") or record.get("prStartTimeGmt"),
                 }
             )
@@ -1171,7 +1197,7 @@ def get_health_summary(
         "date": today_iso(),
         "recovery": get_recovery(),
         "sleep": get_sleep(days),
-        "resting_heart_rate": get_resting_heart_rate(min(max(days, 1), 30)),
+        "resting_heart_rate": get_resting_heart_rate(min(max(days, 1), MAX_DAYS_HEALTH)),
         "stress": get_stress(days),
     }
 

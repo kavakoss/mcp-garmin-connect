@@ -218,6 +218,36 @@ All settings come from environment variables (`.env` is loaded automatically).
 
 Provider bridge variables (optional): `DEEPSEEK_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY`, `GEMINI_API_KEY`, plus the matching `*_BASE_URL` and `*_MODEL` overrides.
 
+## Field units
+
+Garmin's raw payloads mix units, and some fields are named after a unit that Garmin does not actually use (see issue #3: `recoveryTime` is minutes, not hours). This table is the contract — if you add a field, add its row.
+
+| Field | Unit we expose | Garmin raw | Conversion |
+|---|---|---|---|
+| `duration` | `"h:mm:ss"` | `duration` (seconds) | formatted |
+| `duration_min`, `duration_seconds` | minutes / seconds | `duration` (seconds) | `/60` |
+| `distance_km`, `total_km`, `total_distance_km` | kilometres | `distance` (metres) | `/1000` |
+| `pace_min_km`, `pace_seconds_per_km` | `"m:ss"` / s per km | `averageSpeed` (m/s) | derived |
+| `hr_avg`, `hr_max`, `avg_hr`, `min_bpm`, `max_bpm`, `latest_bpm`, `*_avg_bpm` | bpm | `averageHR`, `maxHR`, `restingHeartRate` | – |
+| `cadence_spm`, `avg_cadence` | steps per minute | `averageRunningCadenceInStepsPerMinute` | – |
+| `avg_power_w`, `normalized_power_w`, `cycling_ftp_w` | watts | `avgPower`, `normPower`, `functionalThresholdPower` | – |
+| `elevation_gain_m` | metres | `elevationGain` | assumed metres |
+| `total_strokes` | count | `totalNumberOfStrokes` | – |
+| `hours`, `avg_hours` | hours | `sleepTimeSeconds` (seconds) | `/3600` |
+| `sleep_score`, `score`, `stress_avg`, `max_stress` | 0–100 | `sleepScores.overall`, `avgStressLevel` | – |
+| `rest_minutes`, `low_minutes`, `medium_minutes`, `high_minutes`, `activity_minutes` | minutes | `*StressDuration` (seconds) | `/60` |
+| `total_minutes`, `total_hours`, `total_duration_hours` | minutes / hours | `duration` (seconds) | derived |
+| `last_night_avg_ms`, `weekly_avg_ms`, `hrv_weekly_avg` | milliseconds | `lastNightAvg`, `weeklyAvg`, `hrvWeeklyAverage` | – |
+| `recovery_time_hours` | **hours** | `recoveryTime` (**minutes**) | `/60` (issue #3) |
+| `body_battery_today.charged` | level | `charged` | – |
+| `vo2_max_running`, `vo2_max_cycling` | ml/kg/min | `vo2MaxPreciseValue` | – |
+| `race_predictions.*.seconds` | seconds | `time5K`, `time10K`, … | – |
+| `drift_pct` | percent | computed from laps | – |
+| `records[].value` | **mixed — read `value_unit`** | `value` | see below |
+| `records[].value_unit` | `duration` \| `distance_m` \| `elevation_m` \| `watts` \| `steps` \| `days` | derived from the record label | – |
+
+`recovery_time_hours` is only populated when the watch/account provides Training Readiness — a Forerunner 165, for example, returns no readiness data, so the whole `training_readiness` object is `null`. Other tools that lean on it degrade the same way rather than inventing numbers.
+
 ## How It Stays Fast And Quiet
 
 - **Endpoint-level cache.** Sleeping, stress, RHR, and activity fetches are cached per day/limit and shared across every tool that needs them — a `get_full_snapshot` burst reuses the same responses instead of refetching.

@@ -137,8 +137,21 @@ def test_activities_paged_with_zero_budget_makes_no_call() -> None:
 # --------------------------------------------------------------- caps
 
 
-def test_default_caps_are_backwards_compatible() -> None:
-    assert (MAX_DAYS_HEALTH, MAX_DAYS_ACTIVITIES, MAX_ACTIVITY_LIMIT) == (30, 365, 200)
+def test_caps_fall_back_to_the_documented_defaults(monkeypatch: Any) -> None:
+    """The documented defaults apply when the env vars are unset (this repo's .env may set them)."""
+    from mcp_garmin_connect.config import _env_int_min
+
+    monkeypatch.delenv("GARMIN_MAX_DAYS_HEALTH", raising=False)
+    assert _env_int_min("GARMIN_MAX_DAYS_HEALTH", 30) == 30
+
+    monkeypatch.setenv("GARMIN_MAX_DAYS_HEALTH", "90")
+    assert _env_int_min("GARMIN_MAX_DAYS_HEALTH", 30) == 90
+
+    # A non-numeric or non-positive value must not disable the cap.
+    monkeypatch.setenv("GARMIN_MAX_DAYS_HEALTH", "not-a-number")
+    assert _env_int_min("GARMIN_MAX_DAYS_HEALTH", 30) == 30
+    monkeypatch.setenv("GARMIN_MAX_DAYS_HEALTH", "0")
+    assert _env_int_min("GARMIN_MAX_DAYS_HEALTH", 30) == 1
 
 
 def test_tool_specs_share_the_configured_caps() -> None:
@@ -158,3 +171,34 @@ def test_tool_specs_share_the_configured_caps() -> None:
         spec_by_name["get_full_snapshot"].parameters["activity_days"]["maximum"]
         == MAX_DAYS_ACTIVITIES
     )
+
+
+# --------------------------------------------------------------- unit audit
+
+
+def test_personal_record_value_unit_is_derived_from_the_label() -> None:
+    from mcp_garmin_connect.tools import _personal_record_value_unit
+
+    # Durations come back as "h:mm:ss" strings; the rest are numbers with different units.
+    assert _personal_record_value_unit("Fastest 5K") == "duration"
+    assert _personal_record_value_unit("Fastest 40K ride") == "duration"
+    assert _personal_record_value_unit("Best 20-minute average power") == "watts"
+    assert _personal_record_value_unit("Longest run") == "distance_m"
+    assert _personal_record_value_unit("Longest ride") == "distance_m"
+    assert _personal_record_value_unit("Most elevation gained") == "elevation_m"
+    assert _personal_record_value_unit("Most steps in a day") == "steps"
+    assert _personal_record_value_unit("Longest step goal streak") == "days"
+    assert _personal_record_value_unit(None) is None
+    assert _personal_record_value_unit("Something new from Garmin") is None
+
+
+def test_health_summary_respects_the_configured_health_cap(monkeypatch: Any) -> None:
+    """It used to clamp RHR at a hardcoded 30 even when the cap was raised."""
+    import mcp_garmin_connect.tools as tools
+
+    monkeypatch.setattr(tools, "MAX_DAYS_HEALTH", 90)
+    _install(0)
+
+    summary = tools.get_health_summary(90)
+
+    assert summary["resting_heart_rate"]["period_days"] == 90
