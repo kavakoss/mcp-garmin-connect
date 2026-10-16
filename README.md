@@ -211,6 +211,9 @@ All settings come from environment variables (`.env` is loaded automatically).
 | `GARMIN_TOKEN_STORE` | `~/.garminconnect` | Directory for the OAuth token cache |
 | `GARMIN_CACHE_TTL_SECONDS` | `120` | TTL for cached Garmin endpoint responses |
 | `GARMIN_MAX_CONCURRENCY` | `6` | Global cap on in-flight Garmin requests |
+| `GARMIN_MAX_DAYS_HEALTH` | `30` | Max lookback for `get_sleep` / `get_resting_heart_rate` / `get_stress` / `get_health_summary` |
+| `GARMIN_MAX_DAYS_ACTIVITIES` | `365` | Max lookback for activities, training load and running summaries |
+| `GARMIN_MAX_ACTIVITY_LIMIT` | `200` | Max activities returned per call (history is paged automatically) |
 | `GARMIN_DEMO` | unset | `1` serves fictional sample data (same as `serve --demo`) |
 
 Provider bridge variables (optional): `DEEPSEEK_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY`, `GEMINI_API_KEY`, plus the matching `*_BASE_URL` and `*_MODEL` overrides.

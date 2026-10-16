@@ -9,6 +9,7 @@ from typing import Annotated, Any
 
 from pydantic import Field
 
+from .config import MAX_ACTIVITY_LIMIT, MAX_DAYS_ACTIVITIES, MAX_DAYS_HEALTH
 from .garmin_client import date_range_iso, get_manager, today_iso
 from .normalizers import (
     activity_type_key,
@@ -191,18 +192,43 @@ def _max_metrics(day: str, errors: ErrorList | None = None) -> Any:
     )
 
 
-def _activities_raw(limit: int = 200, errors: ErrorList | None = None) -> list[dict[str, Any]]:
+def _activities_raw(
+    limit: int = 200, errors: ErrorList | None = None, start: int = 0
+) -> list[dict[str, Any]]:
     client = _client()
     raw = _endpoint(
-        f"activities_raw:{limit}",
-        f"activities:{limit}",
-        lambda: client.get_activities(0, limit),
+        f"activities_raw:{start}:{limit}",
+        f"activities:{start}:{limit}",
+        lambda: client.get_activities(start, limit),
         [],
         errors,
     )
     if not isinstance(raw, list):
         return []
     return [item for item in raw if isinstance(item, dict)]
+
+
+def _activities_paged(
+    max_items: int, errors: ErrorList | None = None, page_size: int = 200
+) -> list[dict[str, Any]]:
+    """Walk Garmin's activity pages — a single call is capped around 200 items.
+
+    Without this, asking for more than one page silently returned only the newest
+    200 activities, so a true "all time" range was impossible.
+    """
+    if max_items <= 0:
+        return []
+    out: list[dict[str, Any]] = []
+    start = 0
+    while len(out) < max_items:
+        page = _activities_raw(page_size, errors, start=start)
+        if not page:
+            break
+        out.extend(page)
+        if len(page) < page_size:
+            break
+        start += page_size
+    return out[:max_items]
 
 
 def _extract_resting_heart_rate_bpm(raw: Any) -> int | None:
@@ -328,7 +354,7 @@ def get_recovery() -> dict[str, Any]:
             "level": item.get("level"),
             "feedback_short": item.get("feedbackShort"),
             "feedback_long": item.get("feedbackLong"),
-            "recovery_time_hours": item.get("recoveryTime"),
+            "recovery_time_hours": _minutes_to_hours(item.get("recoveryTime")),
             "sleep_score": item.get("sleepScore"),
             "hrv_weekly_avg": item.get("hrvWeeklyAverage"),
         }
@@ -385,9 +411,9 @@ def get_recovery() -> dict[str, Any]:
 
     training_status = None
     if isinstance(status_raw, dict):
-        latest_map = (
-            status_raw.get("mostRecentTrainingStatus") or {}
-        ).get("latestTrainingStatusData") or {}
+        latest_map = (status_raw.get("mostRecentTrainingStatus") or {}).get(
+            "latestTrainingStatusData"
+        ) or {}
         if latest_map:
             first = next(iter(latest_map.values()))
             if isinstance(first, dict):
@@ -423,7 +449,9 @@ def get_recovery() -> dict[str, Any]:
 
 
 def get_sleep(
-    days: Annotated[int, Field(ge=1, le=30, description="Lookback window in days.")] = 7,
+    days: Annotated[
+        int, Field(ge=1, le=MAX_DAYS_HEALTH, description="Lookback window in days.")
+    ] = 7,
 ) -> dict[str, Any]:
     """Sleep duration and sleep scores for the last N days."""
     dates = date_range_iso(days)
@@ -447,9 +475,7 @@ def get_sleep(
     valid_scores = [d["score"] for d in daily if isinstance(d.get("score"), (int, float))]
     return {
         "period_days": len(dates),
-        "avg_hours": round_number(sum(valid_hours) / len(valid_hours), 2)
-        if valid_hours
-        else None,
+        "avg_hours": round_number(sum(valid_hours) / len(valid_hours), 2) if valid_hours else None,
         "avg_score": round_number(sum(valid_scores) / len(valid_scores), 1)
         if valid_scores
         else None,
@@ -459,10 +485,12 @@ def get_sleep(
 
 
 def get_resting_heart_rate(
-    days: Annotated[int, Field(ge=1, le=30, description="Lookback window in days.")] = 30,
+    days: Annotated[
+        int, Field(ge=1, le=MAX_DAYS_HEALTH, description="Lookback window in days.")
+    ] = 30,
 ) -> dict[str, Any]:
     """Daily resting heart rate with 7-day and 30-day trend summaries, up to 30 days."""
-    safe_days = max(1, min(days, 30))
+    safe_days = max(1, min(days, MAX_DAYS_HEALTH))
     dates = date_range_iso(safe_days)
     errors: ErrorList = []
     daily = []
@@ -497,7 +525,9 @@ def get_resting_heart_rate(
 
 
 def get_stress(
-    days: Annotated[int, Field(ge=1, le=30, description="Lookback window in days.")] = 7,
+    days: Annotated[
+        int, Field(ge=1, le=MAX_DAYS_HEALTH, description="Lookback window in days.")
+    ] = 7,
 ) -> dict[str, Any]:
     """Daily all-day stress levels and stress duration buckets."""
     dates = date_range_iso(days)
@@ -511,13 +541,9 @@ def get_stress(
                 "max_stress": raw.get("maxStressLevel"),
                 "rest_minutes": round_number((raw.get("restStressDuration") or 0) / 60, 1),
                 "low_minutes": round_number((raw.get("lowStressDuration") or 0) / 60, 1),
-                "medium_minutes": round_number(
-                    (raw.get("mediumStressDuration") or 0) / 60, 1
-                ),
+                "medium_minutes": round_number((raw.get("mediumStressDuration") or 0) / 60, 1),
                 "high_minutes": round_number((raw.get("highStressDuration") or 0) / 60, 1),
-                "activity_minutes": round_number(
-                    (raw.get("activityStressDuration") or 0) / 60, 1
-                ),
+                "activity_minutes": round_number((raw.get("activityStressDuration") or 0) / 60, 1),
             }
         )
     valid = [d["stress_avg"] for d in daily if isinstance(d.get("stress_avg"), (int, float))]
@@ -529,10 +555,12 @@ def get_stress(
     }
 
 
-def _fetch_recent_activities(days: int, errors: ErrorList | None = None) -> list[dict[str, Any]]:
+def _fetch_recent_activities(
+    days: int, errors: ErrorList | None = None, max_items: int = MAX_ACTIVITY_LIMIT
+) -> list[dict[str, Any]]:
     cutoff = date_range_iso(days)[-1]
     activities = []
-    for item in _activities_raw(200, errors):
+    for item in _activities_paged(max_items, errors):
         started = item.get("startTimeLocal") or ""
         if started[:10] < cutoff:
             continue
@@ -573,17 +601,18 @@ def _latest_max_metrics(
 
 def get_recent_activities(
     days: Annotated[
-        int, Field(ge=1, le=365, description="How many days back to include.")
+        int, Field(ge=1, le=MAX_DAYS_ACTIVITIES, description="How many days back to include.")
     ] = 14,
     limit: Annotated[
-        int, Field(ge=1, le=200, description="Maximum number of activities to return.")
+        int,
+        Field(ge=1, le=MAX_ACTIVITY_LIMIT, description="Maximum number of activities to return."),
     ] = 50,
 ) -> dict[str, Any]:
     """Recent Garmin activities with normalized sport-aware summary fields."""
-    safe_limit = max(1, min(limit, 200))
-    safe_days = max(1, min(days, 365))
+    safe_limit = max(1, min(limit, MAX_ACTIVITY_LIMIT))
+    safe_days = max(1, min(days, MAX_DAYS_ACTIVITIES))
     errors: ErrorList = []
-    activities = _fetch_recent_activities(safe_days, errors)
+    activities = _fetch_recent_activities(safe_days, errors, safe_limit)
     return {
         "period_days": safe_days,
         "count": min(len(activities), safe_limit),
@@ -630,6 +659,12 @@ def get_activity_detail(activity_id: int) -> dict[str, Any]:
         "raw_keys": sorted(raw.keys())[:80],
         **_errors_payload(errors),
     }
+
+
+def _minutes_to_hours(value: Any) -> float | None:
+    """Garmin's recoveryTime is in MINUTES; the field we expose is in hours (issue #3)."""
+    minutes = _number(value)
+    return round(minutes / 60, 1) if minutes is not None else None
 
 
 def _number(value: Any) -> float | None:
@@ -804,19 +839,17 @@ def _month_key(activity: dict[str, Any]) -> str:
 
 def get_running_summary(
     days: Annotated[
-        int, Field(ge=1, le=365, description="Lookback window in days.")
+        int, Field(ge=1, le=MAX_DAYS_ACTIVITIES, description="Lookback window in days.")
     ] = 90,
 ) -> dict[str, Any]:
     """Running summary: sessions, distance, pace, HR, longest run, fastest run, monthly split."""
-    safe_days = max(1, min(days, 365))
+    safe_days = max(1, min(days, MAX_DAYS_ACTIVITIES))
     errors: ErrorList = []
     runs = _run_activities(safe_days, errors)
     total_distance = sum(activity.get("distance_km") or 0 for activity in runs)
     total_minutes = sum(activity.get("duration_min") or 0 for activity in runs)
     hr_values = [
-        activity["hr_avg"]
-        for activity in runs
-        if isinstance(activity.get("hr_avg"), (int, float))
+        activity["hr_avg"] for activity in runs if isinstance(activity.get("hr_avg"), (int, float))
     ]
     longest = max(runs, key=lambda activity: activity.get("distance_km") or 0, default=None)
     paced_runs = [
@@ -869,9 +902,7 @@ def get_monthly_running_stats(
                 "sessions": len(items),
                 "total_distance_km": round_number(distance, 2),
                 "total_duration_hours": round_number(minutes / 60, 2),
-                "average_pace": _format_pace((minutes * 60) / distance)
-                if distance
-                else None,
+                "average_pace": _format_pace((minutes * 60) / distance) if distance else None,
                 "average_hr": round_number(sum(hr_values) / len(hr_values), 0)
                 if hr_values
                 else None,
@@ -896,13 +927,13 @@ def _compact_activity(activity: dict[str, Any] | None) -> dict[str, Any] | None:
 
 def get_recent_load(
     days: Annotated[
-        int, Field(ge=1, le=365, description="Lookback window in days.")
+        int, Field(ge=1, le=MAX_DAYS_ACTIVITIES, description="Lookback window in days.")
     ] = 28,
 ) -> dict[str, Any]:
     """Training volume aggregated by sport over the last N days."""
-    safe_days = max(1, min(days, 365))
+    safe_days = max(1, min(days, MAX_DAYS_ACTIVITIES))
     errors: ErrorList = []
-    activities = _fetch_recent_activities(safe_days, errors)
+    activities = _fetch_recent_activities(safe_days, errors, MAX_ACTIVITY_LIMIT)
     buckets: dict[str, dict[str, Any]] = {}
     for activity in activities:
         sport = activity.get("sport") or "other"
@@ -954,8 +985,7 @@ def get_training_load() -> dict[str, Any]:
             1,
         )
         chronic = round_number(
-            load_balance.get("chronicTrainingLoad")
-            or load_balance.get("dailyTrainingLoadChronic"),
+            load_balance.get("chronicTrainingLoad") or load_balance.get("dailyTrainingLoadChronic"),
             1,
         )
         ratio = round_number(
@@ -1133,7 +1163,7 @@ def get_personal_records() -> dict[str, Any]:
 
 def get_health_summary(
     days: Annotated[
-        int, Field(ge=1, le=30, description="Lookback window in days.")
+        int, Field(ge=1, le=MAX_DAYS_HEALTH, description="Lookback window in days.")
     ] = 7,
 ) -> dict[str, Any]:
     """Compact health snapshot combining recovery, sleep, and stress."""
@@ -1148,10 +1178,10 @@ def get_health_summary(
 
 def get_full_snapshot(
     activity_days: Annotated[
-        int, Field(ge=1, le=365, description="Activity window in days.")
+        int, Field(ge=1, le=MAX_DAYS_ACTIVITIES, description="Activity window in days.")
     ] = 14,
     load_days: Annotated[
-        int, Field(ge=1, le=365, description="Training load window in days.")
+        int, Field(ge=1, le=MAX_DAYS_ACTIVITIES, description="Training load window in days.")
     ] = 28,
 ) -> dict[str, Any]:
     """Comprehensive Garmin data snapshot for holistic analysis."""
@@ -1193,27 +1223,37 @@ TOOL_SPECS = [
         "get_sleep",
         get_sleep.__doc__ or "",
         get_sleep,
-        {"days": {"type": "integer", "default": 7, "minimum": 1, "maximum": 30}},
+        {"days": {"type": "integer", "default": 7, "minimum": 1, "maximum": MAX_DAYS_HEALTH}},
     ),
     ToolSpec(
         "get_resting_heart_rate",
         get_resting_heart_rate.__doc__ or "",
         get_resting_heart_rate,
-        {"days": {"type": "integer", "default": 30, "minimum": 1, "maximum": 30}},
+        {"days": {"type": "integer", "default": 30, "minimum": 1, "maximum": MAX_DAYS_HEALTH}},
     ),
     ToolSpec(
         "get_stress",
         get_stress.__doc__ or "",
         get_stress,
-        {"days": {"type": "integer", "default": 7, "minimum": 1, "maximum": 30}},
+        {"days": {"type": "integer", "default": 7, "minimum": 1, "maximum": MAX_DAYS_HEALTH}},
     ),
     ToolSpec(
         "get_recent_activities",
         get_recent_activities.__doc__ or "",
         get_recent_activities,
         {
-            "days": {"type": "integer", "default": 14, "minimum": 1, "maximum": 365},
-            "limit": {"type": "integer", "default": 50, "minimum": 1, "maximum": 200},
+            "days": {
+                "type": "integer",
+                "default": 14,
+                "minimum": 1,
+                "maximum": MAX_DAYS_ACTIVITIES,
+            },
+            "limit": {
+                "type": "integer",
+                "default": 50,
+                "minimum": 1,
+                "maximum": MAX_ACTIVITY_LIMIT,
+            },
         },
     ),
     ToolSpec(
@@ -1232,7 +1272,7 @@ TOOL_SPECS = [
         "get_recent_load",
         get_recent_load.__doc__ or "",
         get_recent_load,
-        {"days": {"type": "integer", "default": 28, "minimum": 1, "maximum": 365}},
+        {"days": {"type": "integer", "default": 28, "minimum": 1, "maximum": MAX_DAYS_ACTIVITIES}},
     ),
     ToolSpec("get_training_load", get_training_load.__doc__ or "", get_training_load, {}),
     ToolSpec("get_fitness", get_fitness.__doc__ or "", get_fitness, {}),
@@ -1242,7 +1282,7 @@ TOOL_SPECS = [
         "get_running_summary",
         get_running_summary.__doc__ or "",
         get_running_summary,
-        {"days": {"type": "integer", "default": 90, "minimum": 1, "maximum": 365}},
+        {"days": {"type": "integer", "default": 90, "minimum": 1, "maximum": MAX_DAYS_ACTIVITIES}},
     ),
     ToolSpec(
         "get_monthly_running_stats",
@@ -1254,15 +1294,25 @@ TOOL_SPECS = [
         "get_health_summary",
         get_health_summary.__doc__ or "",
         get_health_summary,
-        {"days": {"type": "integer", "default": 7, "minimum": 1, "maximum": 30}},
+        {"days": {"type": "integer", "default": 7, "minimum": 1, "maximum": MAX_DAYS_HEALTH}},
     ),
     ToolSpec(
         "get_full_snapshot",
         get_full_snapshot.__doc__ or "",
         get_full_snapshot,
         {
-            "activity_days": {"type": "integer", "default": 14, "minimum": 1, "maximum": 365},
-            "load_days": {"type": "integer", "default": 28, "minimum": 1, "maximum": 365},
+            "activity_days": {
+                "type": "integer",
+                "default": 14,
+                "minimum": 1,
+                "maximum": MAX_DAYS_ACTIVITIES,
+            },
+            "load_days": {
+                "type": "integer",
+                "default": 28,
+                "minimum": 1,
+                "maximum": MAX_DAYS_ACTIVITIES,
+            },
         },
     ),
 ]

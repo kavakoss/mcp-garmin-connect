@@ -87,7 +87,7 @@ class DemoGarmin:
                 "level": "MODERATE",
                 "feedbackShort": "TRAINING_READY",
                 "feedbackLong": "You are ready for a moderate session today.",
-                "recoveryTime": 6,
+                "recoveryTime": 660,  # minutes (the tool converts to hours)
                 "sleepScore": 82,
                 "hrvWeeklyAverage": 44,
             }

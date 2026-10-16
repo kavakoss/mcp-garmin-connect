@@ -27,6 +27,22 @@ def _env_flag(name: str) -> bool:
     return os.getenv(name, "").strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _env_int_min(name: str, default: int, minimum: int = 1) -> int:
+    return max(minimum, _env_int(name, default))
+
+
+# Tool input caps. These used to be hardcoded in tools.py, which meant a personal
+# deployment could not pull longer history without forking. Now env-tunable:
+#   GARMIN_MAX_DAYS_HEALTH     sleep / RHR / stress / health_summary lookback (default 30)
+#   GARMIN_MAX_DAYS_ACTIVITIES activity / load / running-summary lookback (default 365)
+#   GARMIN_MAX_ACTIVITY_LIMIT  max activities returned per call (default 200)
+# .env is loaded here because these are read at import time, before Settings exists.
+load_environment()
+MAX_DAYS_HEALTH = _env_int_min("GARMIN_MAX_DAYS_HEALTH", 30)
+MAX_DAYS_ACTIVITIES = _env_int_min("GARMIN_MAX_DAYS_ACTIVITIES", 365)
+MAX_ACTIVITY_LIMIT = _env_int_min("GARMIN_MAX_ACTIVITY_LIMIT", 200)
+
+
 @dataclass(frozen=True)
 class Settings:
     garmin_email: str | None
