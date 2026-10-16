@@ -1266,6 +1266,103 @@ def get_personal_records() -> dict[str, Any]:
     return {"count": len(records), "records": records, "available": True, **_errors_payload(errors)}
 
 
+def get_hrv_history(
+    days: Annotated[
+        int, Field(ge=1, le=MAX_DAYS_HEALTH, description="Lookback window in days.")
+    ] = 30,
+) -> dict[str, Any]:
+    """Daily HRV (last-night and weekly average) plus a baseline.
+
+    get_recovery carries only a 7-day HRV window, which is fine for "how am I today"
+    but useless for trend questions. This is the same data over a longer range.
+    `daily` is newest-first, like every other daily array here.
+    """
+    safe_days = max(1, min(days, MAX_DAYS_HEALTH))
+    dates = date_range_iso(safe_days)
+    errors: ErrorList = []
+    daily = []
+    for day, raw in zip(dates, _fetch_days(dates, lambda d: _hrv_day(d, errors)), strict=True):
+        summary = raw.get("hrvSummary") if isinstance(raw, dict) else None
+        if not isinstance(summary, dict):
+            continue
+        if summary.get("lastNightAvg") is None and summary.get("weeklyAvg") is None:
+            continue
+        daily.append(
+            {
+                "date": day,
+                "last_night_avg_ms": summary.get("lastNightAvg"),
+                "weekly_avg_ms": summary.get("weeklyAvg"),
+                "status": summary.get("status"),
+            }
+        )
+
+    values = [
+        entry["last_night_avg_ms"]
+        for entry in daily
+        if isinstance(entry.get("last_night_avg_ms"), (int, float))
+    ]
+    baseline = round_number(sum(values) / len(values), 1) if values else None
+    latest = values[-1] if values else None
+    return {
+        "period_days": safe_days,
+        "days_with_data": len(daily),
+        "baseline_avg_ms": baseline,
+        "latest_ms": latest,
+        "delta_vs_baseline_ms": round_number(latest - baseline, 1)
+        if latest is not None and baseline is not None
+        else None,
+        "daily": daily,
+        **_errors_payload(errors),
+    }
+
+
+def get_body_battery_range(
+    days: Annotated[
+        int, Field(ge=1, le=MAX_DAYS_HEALTH, description="Lookback window in days.")
+    ] = 7,
+) -> dict[str, Any]:
+    """Daily body battery (charged, drained, highest, lowest, end of day).
+
+    get_recovery only exposes today's levels; this walks the range endpoint so the
+    history is available for trends. The raw per-timestamp arrays are summarised away
+    because they are large and rarely useful. `daily` is newest-first, like every other
+    daily array here.
+    """
+    safe_days = max(1, min(days, MAX_DAYS_HEALTH))
+    dates = date_range_iso(safe_days)
+    errors: ErrorList = []
+    # date_range_iso() is newest-first, so the API range is (oldest, newest).
+    raw = _body_battery(dates[-1], dates[0], errors)
+
+    daily = []
+    if isinstance(raw, list):
+        for item in raw:
+            if not isinstance(item, dict):
+                continue
+            day = str(item.get("date") or "")[:10]
+            if not day:
+                continue
+            daily.append(
+                {
+                    "date": day,
+                    "charged": item.get("charged"),
+                    "drained": item.get("drained"),
+                    "highest": item.get("highestBatteryLevel") or item.get("highest"),
+                    "lowest": item.get("lowestBatteryLevel") or item.get("lowest"),
+                    "end_of_day": item.get("endOfDayBatteryLevel"),
+                }
+            )
+    # Match the rest of the tools: daily arrays are newest-first.
+    daily.sort(key=lambda entry: entry["date"], reverse=True)
+
+    return {
+        "period_days": safe_days,
+        "days_with_data": len(daily),
+        "daily": daily,
+        **_errors_payload(errors),
+    }
+
+
 def get_health_summary(
     days: Annotated[
         int, Field(ge=1, le=MAX_DAYS_HEALTH, description="Lookback window in days.")
@@ -1401,6 +1498,18 @@ TOOL_SPECS = [
         "get_health_summary",
         get_health_summary.__doc__ or "",
         get_health_summary,
+        {"days": {"type": "integer", "default": 7, "minimum": 1, "maximum": MAX_DAYS_HEALTH}},
+    ),
+    ToolSpec(
+        "get_hrv_history",
+        get_hrv_history.__doc__ or "",
+        get_hrv_history,
+        {"days": {"type": "integer", "default": 30, "minimum": 1, "maximum": MAX_DAYS_HEALTH}},
+    ),
+    ToolSpec(
+        "get_body_battery_range",
+        get_body_battery_range.__doc__ or "",
+        get_body_battery_range,
         {"days": {"type": "integer", "default": 7, "minimum": 1, "maximum": MAX_DAYS_HEALTH}},
     ),
     ToolSpec(

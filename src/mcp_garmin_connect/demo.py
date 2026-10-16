@@ -131,15 +131,24 @@ class DemoGarmin:
         }
 
     def get_body_battery(self, start: str, end: str) -> list[dict[str, Any]]:
-        return [
-            {
-                "charged": 62,
-                "drained": 49,
-                "highestBatteryLevel": 86,
-                "lowestBatteryLevel": 21,
-                "endOfDayBatteryLevel": 37,
-            }
-        ]
+        # One entry per day, like Garmin: the date field is what the range tool keys on.
+        first = date.fromisoformat(start)
+        last = date.fromisoformat(end)
+        days: list[dict[str, Any]] = []
+        current = first
+        while current <= last:
+            days.append(
+                {
+                    "date": f"{current.isoformat()}T00:00:00.000",
+                    "charged": 62,
+                    "drained": 49,
+                    "highestBatteryLevel": 86,
+                    "lowestBatteryLevel": 21,
+                    "endOfDayBatteryLevel": 37,
+                }
+            )
+            current += timedelta(days=1)
+        return days
 
     def get_rhr_day(self, cdate: str) -> dict[str, Any]:
         return {

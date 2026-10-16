@@ -190,6 +190,8 @@ Per-client examples (Claude Desktop, Claude Code, Cursor, Continue, Hermes, gene
 | `get_personal_records` | Garmin personal records |
 | `get_running_summary` | Running summary with pace, HR, longest and fastest run |
 | `get_monthly_running_stats` | Monthly running breakdown |
+| `get_hrv_history` | Daily HRV (last-night + weekly average) with a baseline over a longer window |
+| `get_body_battery_range` | Daily body battery: charged, drained, highest, lowest, end of day |
 | `get_health_summary` | Compact recovery, sleep, RHR, and stress snapshot |
 | `get_full_snapshot` | Broad multi-section Garmin snapshot |
 
@@ -232,6 +234,8 @@ Provider bridge variables (optional): `DEEPSEEK_API_KEY`, `OPENAI_API_KEY`, `ANT
 ## Field units
 
 Garmin's raw payloads mix units, and some fields are named after a unit that Garmin does not actually use (see issue #3: `recoveryTime` is minutes, not hours). This table is the contract — if you add a field, add its row.
+
+Daily arrays (`daily` on the sleep, stress, RHR, HRV and body-battery tools) are **newest-first** — index 0 is the most recent day. Sort client-side if you need chronological order.
 
 | Field | Unit we expose | Garmin raw | Conversion |
 |---|---|---|---|
