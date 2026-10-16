@@ -22,6 +22,7 @@ from .normalizers import (
 ErrorList = list[dict[str, str]]
 _FAILED = object()
 _ZONE_KEY_RE = re.compile(r"(zone|threshold|lactate|ftp|vo2)", re.IGNORECASE)
+_ISO_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
 @dataclass(frozen=True)
@@ -209,25 +210,48 @@ def _activities_raw(
 
 
 def _activities_paged(
-    max_items: int, errors: ErrorList | None = None, page_size: int = 200
+    max_items: int,
+    errors: ErrorList | None = None,
+    page_size: int = 200,
+    stop_before: str | None = None,
+    max_pages: int = 10,
 ) -> list[dict[str, Any]]:
     """Walk Garmin's activity pages — a single call is capped around 200 items.
 
     Without this, asking for more than one page silently returned only the newest
     200 activities, so a true "all time" range was impossible.
+
+    `stop_before` (YYYY-MM-DD) stops paging once a page reaches past that date, which
+    is what makes an explicit `start_date` window usable: the newest N activities may
+    all be newer than the window being asked for. `max_pages` keeps a runaway loop
+    from hammering the API.
     """
     if max_items <= 0:
         return []
     out: list[dict[str, Any]] = []
     start = 0
-    while len(out) < max_items:
+    for _ in range(max(1, max_pages)):
         page = _activities_raw(page_size, errors, start=start)
         if not page:
             break
         out.extend(page)
         if len(page) < page_size:
             break
+        if stop_before:
+            oldest = (
+                min(
+                    (item.get("startTimeLocal") or "")[:10]
+                    for item in page
+                    if item.get("startTimeLocal")
+                )
+                if any(item.get("startTimeLocal") for item in page)
+                else ""
+            )
+            if oldest and oldest < stop_before:
+                break
         start += page_size
+        if len(out) >= max_items:
+            break
     return out[:max_items]
 
 
@@ -581,13 +605,26 @@ def get_stress(
 
 
 def _fetch_recent_activities(
-    days: int, errors: ErrorList | None = None, max_items: int = MAX_ACTIVITY_LIMIT
+    days: int,
+    errors: ErrorList | None = None,
+    max_items: int = MAX_ACTIVITY_LIMIT,
+    start_date: str = "",
+    end_date: str = "",
 ) -> list[dict[str, Any]]:
-    cutoff = date_range_iso(days)[-1]
+    """Activities in a window. An explicit start_date/end_date wins over `days`."""
+    if start_date or end_date:
+        lower = start_date or "0000-01-01"
+        upper = end_date or today_iso()
+    else:
+        lower = date_range_iso(days)[-1]
+        upper = ""
     activities = []
-    for item in _activities_paged(max_items, errors):
+    for item in _activities_paged(max_items, errors, stop_before=lower if start_date else None):
         started = item.get("startTimeLocal") or ""
-        if started[:10] < cutoff:
+        day = started[:10]
+        if not day or day < lower:
+            continue
+        if upper and day > upper:
             continue
         normalized = normalize_activity(item)
         if normalized:
@@ -626,24 +663,66 @@ def _latest_max_metrics(
 
 def get_recent_activities(
     days: Annotated[
-        int, Field(ge=1, le=MAX_DAYS_ACTIVITIES, description="How many days back to include.")
+        int,
+        Field(
+            ge=1,
+            le=MAX_DAYS_ACTIVITIES,
+            description="How many days back to include. Ignored when start_date is given.",
+        ),
     ] = 14,
     limit: Annotated[
         int,
         Field(ge=1, le=MAX_ACTIVITY_LIMIT, description="Maximum number of activities to return."),
     ] = 50,
+    start_date: Annotated[
+        str, Field(description="YYYY-MM-DD. Explicit window start (overrides days).")
+    ] = "",
+    end_date: Annotated[
+        str, Field(description="YYYY-MM-DD. Window end, inclusive. Defaults to today.")
+    ] = "",
 ) -> dict[str, Any]:
-    """Recent Garmin activities with normalized sport-aware summary fields."""
+    """Recent Garmin activities with normalized sport-aware summary fields.
+
+    Pass start_date/end_date for a specific historical window (both inclusive);
+    otherwise the `days` lookback is used. Explicit dates make a past window
+    queryable without pulling every newer activity first.
+    """
     safe_limit = max(1, min(limit, MAX_ACTIVITY_LIMIT))
     safe_days = max(1, min(days, MAX_DAYS_ACTIVITIES))
     errors: ErrorList = []
-    activities = _fetch_recent_activities(safe_days, errors, safe_limit)
-    return {
+
+    for name, value in (("start_date", start_date), ("end_date", end_date)):
+        if value and not _ISO_DATE_RE.match(value.strip()):
+            return {
+                "error": f"{name} must be YYYY-MM-DD",
+                "count": 0,
+                "activities": [],
+                **_errors_payload(errors),
+            }
+    if start_date and end_date and start_date.strip() > end_date.strip():
+        return {
+            "error": "start_date is after end_date",
+            "count": 0,
+            "activities": [],
+            **_errors_payload(errors),
+        }
+
+    explicit = bool(start_date or end_date)
+    activities = _fetch_recent_activities(
+        safe_days, errors, safe_limit, start_date.strip(), end_date.strip()
+    )
+    out: dict[str, Any] = {
         "period_days": safe_days,
         "count": min(len(activities), safe_limit),
         "activities": activities[:safe_limit],
-        **_errors_payload(errors),
     }
+    if explicit:
+        out["window"] = {
+            "start": start_date.strip() or date_range_iso(safe_days)[-1],
+            "end": end_date.strip() or today_iso(),
+        }
+    out.update(_errors_payload(errors))
+    return out
 
 
 def get_activity_detail(activity_id: int) -> dict[str, Any]:
@@ -1280,6 +1359,8 @@ TOOL_SPECS = [
                 "minimum": 1,
                 "maximum": MAX_ACTIVITY_LIMIT,
             },
+            "start_date": {"type": "string", "default": ""},
+            "end_date": {"type": "string", "default": ""},
         },
     ),
     ToolSpec(

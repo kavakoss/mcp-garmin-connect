@@ -193,6 +193,17 @@ Per-client examples (Claude Desktop, Claude Code, Cursor, Continue, Hermes, gene
 | `get_health_summary` | Compact recovery, sleep, RHR, and stress snapshot |
 | `get_full_snapshot` | Broad multi-section Garmin snapshot |
 
+## Activity windows
+
+`get_recent_activities` accepts either a lookback (`days`) or an explicit window:
+
+```jsonc
+{ "days": 30 }                                          // newest 30 days
+{ "start_date": "2026-08-01", "end_date": "2026-08-31" } // August 2026 only
+```
+
+Both dates are inclusive and `YYYY-MM-DD`; `end_date` defaults to today. Explicit dates win over `days` and make a **past** window queryable without pulling every newer activity first — the pager walks backwards and stops once it reaches `start_date`. The response then includes the resolved `window` so callers can see exactly what was queried. Invalid or reversed dates return an `error` field instead of silently returning everything.
+
 ## MCP Prompts
 
 - `recovery_check`

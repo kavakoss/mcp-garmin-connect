@@ -202,3 +202,98 @@ def test_health_summary_respects_the_configured_health_cap(monkeypatch: Any) -> 
     summary = tools.get_health_summary(90)
 
     assert summary["resting_heart_rate"]["period_days"] == 90
+
+
+# --------------------------------------------------------------- explicit windows
+
+
+class DatedGarmin:
+    """Activities newest-first, like Garmin, so window/paging logic can be exercised."""
+
+    def __init__(self, dates: list[str]) -> None:
+        self.dates = dates
+        self.calls: list[tuple[int, int]] = []
+
+    def get_activities(self, start: int, limit: int) -> list[dict[str, Any]]:
+        self.calls.append((start, limit))
+        return [
+            {
+                "activityId": index + 1,
+                "activityName": "Run",
+                "activityType": {"typeKey": "running"},
+                "startTimeLocal": f"{day} 07:00:00",
+                "duration": 1800,
+                "distance": 5000,
+                "averageHR": 140,
+            }
+            for index, day in enumerate(self.dates[start : start + limit], start=start)
+        ]
+
+
+def _install_dated(dates: list[str]) -> DatedGarmin:
+    reset_manager()
+    import mcp_garmin_connect.garmin_client as garmin_client
+
+    class Manager(FakeManager):
+        def __init__(self) -> None:
+            super().__init__(0)
+            self._client = DatedGarmin(dates)
+
+    manager = Manager()
+    garmin_client._manager = manager
+    return manager._client  # type: ignore[return-value]
+
+
+def _days_desc(count: int, newest: str = "2026-10-16") -> list[str]:
+    from datetime import date, timedelta
+
+    start = date.fromisoformat(newest)
+    return [(start - timedelta(days=offset)).isoformat() for offset in range(count)]
+
+
+def test_explicit_window_filters_to_the_requested_dates() -> None:
+    from mcp_garmin_connect.tools import get_recent_activities
+
+    _install_dated(_days_desc(400))
+
+    result = get_recent_activities(start_date="2026-08-01", end_date="2026-08-31", limit=1000)
+
+    assert result["window"] == {"start": "2026-08-01", "end": "2026-08-31"}
+    days = sorted(a["date"][:10] for a in result["activities"])
+    assert days[0] >= "2026-08-01" and days[-1] <= "2026-08-31"
+    assert len(days) == 31
+
+
+def test_paging_stops_once_it_reaches_the_window_start() -> None:
+    from mcp_garmin_connect.tools import get_recent_activities
+
+    fake = _install_dated(_days_desc(500))
+
+    get_recent_activities(start_date="2026-06-01", limit=1000)
+
+    # 500 activities are one page short of a full second page; the loop must stop
+    # rather than keep walking pages for a window it already reached.
+    assert len(fake.calls) <= 3
+    assert fake.calls[0] == (0, 200)
+
+
+def test_invalid_dates_are_rejected_without_calling_garmin() -> None:
+    from mcp_garmin_connect.tools import get_recent_activities
+
+    fake = _install_dated(_days_desc(10))
+
+    assert "error" in get_recent_activities(start_date="01-08-2026")
+    assert "error" in get_recent_activities(end_date="besok")
+    assert "error" in get_recent_activities(start_date="2026-09-01", end_date="2026-08-01")
+    assert fake.calls == []
+
+
+def test_days_still_works_when_no_dates_are_given() -> None:
+    from mcp_garmin_connect.tools import get_recent_activities
+
+    _install_dated(_days_desc(40))
+
+    result = get_recent_activities(days=7)
+
+    assert "window" not in result
+    assert result["count"] <= 7
