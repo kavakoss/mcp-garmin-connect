@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import json
+import sys
 import time
 from dataclasses import replace
 from pathlib import Path
@@ -79,8 +80,9 @@ def test_token_is_cached_and_reused(tmp_path: Path) -> None:
     assert first.access_token == second.access_token
     assert len(calls) == 1, "second call must reuse the cached bearer token"
     assert (tmp_path / "token.json").exists()
-    mode = (tmp_path / "token.json").stat().st_mode & 0o777
-    assert mode == 0o600, "bearer token cache must not be world readable"
+    if sys.platform != "win32":  # POSIX-only permission bits; Windows uses ACLs
+        mode = (tmp_path / "token.json").stat().st_mode & 0o777
+        assert mode == 0o600, "bearer token cache must not be world readable"
 
 
 def test_expired_cache_is_refreshed(tmp_path: Path) -> None:
