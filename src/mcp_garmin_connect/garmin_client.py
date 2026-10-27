@@ -17,6 +17,8 @@ _TOKEN_CACHE_FILES = ("garmin_tokens.json", "oauth1_token.json", "oauth2_token.j
 _AUTH_ERROR_NAMES = {"GarminConnectAuthenticationError"}
 _CONNECTION_ERROR_NAMES = {"GarminConnectConnectionError"}
 _RATE_LIMIT_ERROR_NAMES = {"GarminConnectTooManyRequestsError"}
+_PERSONAL_AUTH_ERROR_NAMES = {"PersonalApiAuthError"}
+_PERSONAL_RATE_LIMIT_NAMES = {"PersonalApiRateLimitError"}
 
 
 class GarminClientManager:
@@ -28,8 +30,16 @@ class GarminClientManager:
         self._request_semaphore = BoundedSemaphore(max(1, self.settings.garmin_max_concurrency))
 
     @property
+    def backend(self) -> str:
+        """Active backend: ``demo``, ``personal`` (official API) or ``unofficial``."""
+        return self.settings.resolved_auth_mode()
+
+    @property
     def token_store(self) -> str:
         return self.settings.garmin_token_store
+
+    def personal_token_cache_present(self) -> bool:
+        return os.path.isfile(self.settings.garmin_personal_token_cache)
 
     def token_cache_present(self) -> bool:
         return any(
@@ -69,15 +79,38 @@ class GarminClientManager:
                 raise self._map_error(retry_exc) from retry_exc
             return client
 
+    def login_personal(self) -> Any:
+        """Authenticate with the official Garmin Connect Personal API.
+
+        The key is exchanged for a 24-hour bearer token; the token is cached next
+        to the unofficial token store. A profile fetch validates the credentials
+        before the first real tool call, so a bad/expired key fails loudly.
+        """
+        from .personal_api import PersonalApiAuthenticator, PersonalApiBackend, PersonalApiClient
+
+        authenticator = PersonalApiAuthenticator(
+            self.settings.require_personal_api_key(),
+            base_url=self.settings.garmin_personal_base_url,
+            cache_path=self.settings.garmin_personal_token_cache,
+            timeout=self.settings.garmin_personal_timeout_seconds,
+        )
+        backend = PersonalApiBackend(PersonalApiClient(authenticator))
+        backend.get_user_profile()  # fail fast on an expired or revoked key
+        log.info("Garmin Personal API authenticated (official backend)")
+        return backend
+
     def client(self) -> Any:
         if self._client is None:
             with self._login_lock:
                 if self._client is None:
-                    if self.settings.garmin_demo:
+                    mode = self.settings.resolved_auth_mode()
+                    if mode == "demo":
                         from .demo import DemoGarmin
 
                         self._client = DemoGarmin()
                         log.info("Garmin demo mode active: fictional data, no credentials used")
+                    elif mode == "personal":
+                        self._client = self.login_personal()
                     else:
                         self._client = self.login(allow_interactive_mfa=False)
                         log.info(
@@ -108,6 +141,8 @@ class GarminClientManager:
                 return fn()
         except Exception as exc:
             name = type(exc).__name__
+            if name in _PERSONAL_AUTH_ERROR_NAMES | _PERSONAL_RATE_LIMIT_NAMES:
+                raise
             if name in _AUTH_ERROR_NAMES | _CONNECTION_ERROR_NAMES | _RATE_LIMIT_ERROR_NAMES:
                 raise self._map_error(exc) from exc
             source = label or name

@@ -1,6 +1,6 @@
 [project]
 name = "mcp-garmin-connect"
-version = "0.2.0"
+version = "0.3.0"
 description = "LLM-agnostic MCP server for Garmin Connect data, with optional provider demo agents."
 readme = "README.md"
 requires-python = ">=3.11"

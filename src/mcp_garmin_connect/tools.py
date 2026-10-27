@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import re
 from collections import defaultdict
 from collections.abc import Callable
@@ -1419,6 +1420,322 @@ def _safe_section(fn: Callable[[], dict[str, Any]]) -> dict[str, Any]:
         return {"error": f"{type(exc).__name__}: {exc}"}
 
 
+# ---------------------------------------------------------------------------
+# Personal API only tools
+#
+# These use endpoints that exist in the official Garmin Personal API but have no
+# equivalent in the unofficial email/password flow, so they are unavailable on
+# GARMIN_AUTH_MODE=unofficial. See docs/personal-api.md.
+# ---------------------------------------------------------------------------
+
+_PERSONAL_ONLY_HINT = (
+    "This tool needs the official Garmin Personal API. Set GARMIN_PERSONAL_API_KEY "
+    "(create one at https://connect.garmin.com/app/auth/settings/personalApiToken) and "
+    "GARMIN_AUTH_MODE=personal, then restart the server. See docs/personal-api.md."
+)
+
+
+def _personal_only_error() -> dict[str, Any] | None:
+    manager = get_manager()
+    if manager.backend in {"personal", "demo"}:
+        return None
+    return {
+        "error": "personal api required",
+        "backend": manager.backend,
+        "hint": _PERSONAL_ONLY_HINT,
+    }
+
+
+def _rows(payload: Any, *keys: str) -> list[dict[str, Any]]:
+    """Pull the first list-of-dicts out of a payload, trying known envelope keys."""
+    if isinstance(payload, list):
+        return [item for item in payload if isinstance(item, dict)]
+    if isinstance(payload, dict):
+        for key in keys:
+            value = payload.get(key)
+            if isinstance(value, list):
+                return [item for item in value if isinstance(item, dict)]
+    return []
+
+
+def get_body_composition(
+    days: Annotated[
+        int, Field(ge=1, le=MAX_DAYS_HEALTH, description="Lookback window in days.")
+    ] = 30,
+) -> dict[str, Any]:
+    """Weight (and body fat/muscle when the scale reports it) from Garmin Connect.
+
+    Personal API only. Weight is what most fitness decisions here hinge on, and
+    the unofficial flow never exposed it as a tool.
+    """
+    blocked = _personal_only_error()
+    if blocked:
+        return blocked
+    client = _client()
+    dates = date_range_iso(max(1, min(days, MAX_DAYS_HEALTH)))
+    errors: ErrorList = []
+    raw = _endpoint(
+        f"body_composition:{dates[-1]}:{dates[0]}",
+        "body_composition",
+        lambda: client.get_body_composition(dates[-1], dates[0]),
+        {},
+        errors,
+    )
+    rows = _rows(raw, "dateWeightList", "dailyWeightSummaries", "allWeightMetrics", "weights")
+    daily = []
+    for item in rows:
+        day = str(
+            item.get("calendarDate")
+            or item.get("date")
+            or item.get("summaryDate")
+            or item.get("timestampGMT")
+            or ""
+        )[:10]
+        if not day:
+            continue
+        weight_g = item.get("weight")
+        weight_kg = (
+            round_number(weight_g / 1000, 2)
+            if isinstance(weight_g, (int, float)) and weight_g > 0
+            else round_number(item.get("weightKg"), 2)
+        )
+        daily.append(
+            {
+                "date": day,
+                "weight_kg": weight_kg,
+                "bmi": round_number(item.get("bmi"), 1),
+                "body_fat_pct": round_number(item.get("bodyFat"), 1),
+                "body_muscle_kg": round_number(
+                    item.get("muscleMass") / 1000
+                    if isinstance(item.get("muscleMass"), (int, float))
+                    else None,
+                    2,
+                ),
+                "body_water_pct": round_number(item.get("bodyWater"), 1),
+            }
+        )
+    daily.sort(key=lambda entry: entry["date"], reverse=True)
+    weights = [
+        entry["weight_kg"] for entry in daily if isinstance(entry["weight_kg"], (int, float))
+    ]
+    return {
+        "period_days": len(dates),
+        "days_with_data": len(daily),
+        "avg_weight_kg": round_number(sum(weights) / len(weights), 2) if weights else None,
+        "latest_weight_kg": daily[0]["weight_kg"] if daily else None,
+        "daily": daily,
+        **_errors_payload(errors),
+    }
+
+
+def get_spo2(
+    days: Annotated[
+        int, Field(ge=1, le=MAX_DAYS_HEALTH, description="Lookback window in days.")
+    ] = 7,
+) -> dict[str, Any]:
+    """Blood oxygen (SpO2) acclimation per day. Personal API only."""
+    blocked = _personal_only_error()
+    if blocked:
+        return blocked
+    client = _client()
+    errors: ErrorList = []
+    daily = []
+    for day in date_range_iso(max(1, min(days, MAX_DAYS_HEALTH))):
+        raw = _endpoint(
+            f"spo2:{day}",
+            f"spo2:{day}",
+            lambda day=day: client.get_spo2(day),
+            {},
+            errors,
+        )
+        if not isinstance(raw, dict) or not raw:
+            daily.append({"date": day, "avg_spo2": None, "lowest_spo2": None})
+            continue
+        daily.append(
+            {
+                "date": day,
+                "avg_spo2": round_number(raw.get("averageSpO2") or raw.get("avgSpO2"), 1),
+                "lowest_spo2": round_number(raw.get("lowestSpO2"), 1),
+                "latest_spo2": round_number(raw.get("latestSpO2"), 1),
+            }
+        )
+    values = [entry["avg_spo2"] for entry in daily if isinstance(entry["avg_spo2"], (int, float))]
+    return {
+        "period_days": len(daily),
+        "avg_spo2": round_number(sum(values) / len(values), 1) if values else None,
+        "daily": daily,
+        **_errors_payload(errors),
+    }
+
+
+def get_hydration(
+    days: Annotated[
+        int, Field(ge=1, le=MAX_DAYS_HEALTH, description="Lookback window in days.")
+    ] = 7,
+) -> dict[str, Any]:
+    """Logged daily fluid intake in millilitres. Personal API only."""
+    blocked = _personal_only_error()
+    if blocked:
+        return blocked
+    client = _client()
+    dates = date_range_iso(max(1, min(days, MAX_DAYS_HEALTH)))
+    errors: ErrorList = []
+    raw = _endpoint(
+        f"hydration:{dates[-1]}:{dates[0]}",
+        "hydration",
+        lambda: client.get_hydration(dates[-1], dates[0]),
+        {},
+        errors,
+    )
+    daily = []
+    for item in _rows(raw, "hydrationValues", "dailyHydration", "hydration"):
+        day = str(item.get("calendarDate") or item.get("date") or "")[:10]
+        if not day:
+            continue
+        value = item.get("valueInML") or item.get("value") or item.get("amountInML")
+        goal = item.get("goalInML") or item.get("goal")
+        daily.append(
+            {
+                "date": day,
+                "intake_ml": round_number(value, 0) if isinstance(value, (int, float)) else None,
+                "goal_ml": round_number(goal, 0) if isinstance(goal, (int, float)) else None,
+            }
+        )
+    daily.sort(key=lambda entry: entry["date"], reverse=True)
+    return {
+        "period_days": len(dates),
+        "days_with_data": len(daily),
+        "daily": daily,
+        **_errors_payload(errors),
+    }
+
+
+def get_fitness_age() -> dict[str, Any]:
+    """Garmin's fitness age for today. Personal API only."""
+    blocked = _personal_only_error()
+    if blocked:
+        return blocked
+    client = _client()
+    manager = get_manager()
+    errors: ErrorList = []
+    raw = manager.cached(
+        f"fitness_age:{today_iso()}",
+        lambda: manager.safe_call(
+            client.get_fitness_age,
+            default={},
+            errors=errors,
+            label="fitness_age",
+        ),
+    )
+    if not isinstance(raw, dict) or not raw:
+        return {"error": "fitness age not available", **_errors_payload(errors)}
+    return {
+        "date": today_iso(),
+        "fitness_age": raw.get("fitnessAge") or raw.get("chronologicalAge"),
+        "chronological_age": raw.get("chronologicalAge"),
+        "achievable_fitness_age": raw.get("achievableFitnessAge"),
+        "previous_fitness_age": raw.get("previousFitnessAge"),
+        **_errors_payload(errors),
+    }
+
+
+def get_steps_history(
+    days: Annotated[
+        int, Field(ge=1, le=MAX_DAYS_HEALTH, description="Lookback window in days.")
+    ] = 7,
+) -> dict[str, Any]:
+    """Daily step totals and goals. Personal API only."""
+    blocked = _personal_only_error()
+    if blocked:
+        return blocked
+    client = _client()
+    dates = date_range_iso(max(1, min(days, MAX_DAYS_HEALTH)))
+    errors: ErrorList = []
+    raw = _endpoint(
+        f"steps:{dates[-1]}:{dates[0]}",
+        "steps",
+        lambda: client.get_steps(dates[-1], dates[0]),
+        {},
+        errors,
+    )
+    daily = []
+    for item in _rows(raw, "steps", "dailySteps", "stepsValues"):
+        day = str(item.get("calendarDate") or item.get("date") or "")[:10]
+        if not day:
+            continue
+        total = item.get("totalSteps") or item.get("steps") or item.get("value")
+        daily.append(
+            {
+                "date": day,
+                "steps": int(total) if isinstance(total, (int, float)) else None,
+                "goal": int(item["stepGoal"])
+                if isinstance(item.get("stepGoal"), (int, float))
+                else None,
+            }
+        )
+    daily.sort(key=lambda entry: entry["date"], reverse=True)
+    totals = [entry["steps"] for entry in daily if isinstance(entry["steps"], (int, float))]
+    return {
+        "period_days": len(dates),
+        "days_with_data": len(daily),
+        "avg_steps": round_number(sum(totals) / len(totals), 0) if totals else None,
+        "daily": daily,
+        **_errors_payload(errors),
+    }
+
+
+def download_activity_file(
+    activity_id: int,
+    save_path: Annotated[
+        str, Field(description="Where to write the .zip. Empty = activity-<id>.zip in cwd.")
+    ] = "",
+) -> dict[str, Any]:
+    """Download the original activity file (ZIP containing the .FIT) for one activity.
+
+    Personal API only. This is the raw recording — GPS track, HR, cadence, laps,
+    sample by sample — which the unofficial flow cannot fetch. Garmin strips some
+    fields it computes (VO2 Max, recovery time, performance condition) from files
+    delivered through its API, so this is not identical to a manual download.
+    """
+    blocked = _personal_only_error()
+    if blocked:
+        return blocked
+    client = _client()
+    manager = get_manager()
+    errors: ErrorList = []
+    target = os.path.expanduser(save_path) if save_path else f"activity-{activity_id}.zip"
+    payload = manager.safe_call(
+        lambda: client.download_activity_file(activity_id),
+        default=None,
+        errors=errors,
+        label=f"download:{activity_id}",
+    )
+    if not isinstance(payload, (bytes, bytearray)) or not payload:
+        return {
+            "activity_id": activity_id,
+            "error": "activity file not available",
+            **_errors_payload(errors),
+        }
+    try:
+        os.makedirs(os.path.dirname(os.path.abspath(target)) or ".", exist_ok=True)
+        with open(target, "wb") as handle:
+            handle.write(payload)
+    except OSError as exc:
+        return {
+            "activity_id": activity_id,
+            "error": f"could not write {target}: {exc}",
+            "bytes": len(payload),
+            **_errors_payload(errors),
+        }
+    return {
+        "activity_id": activity_id,
+        "saved_to": os.path.abspath(target),
+        "bytes": len(payload),
+        "format": "zip (contains the original .FIT)",
+        **_errors_payload(errors),
+    }
+
+
 TOOL_SPECS = [
     ToolSpec("get_recovery", get_recovery.__doc__ or "", get_recovery, {}),
     ToolSpec(
@@ -1511,6 +1828,40 @@ TOOL_SPECS = [
         get_body_battery_range.__doc__ or "",
         get_body_battery_range,
         {"days": {"type": "integer", "default": 7, "minimum": 1, "maximum": MAX_DAYS_HEALTH}},
+    ),
+    ToolSpec(
+        "get_body_composition",
+        get_body_composition.__doc__ or "",
+        get_body_composition,
+        {"days": {"type": "integer", "default": 30, "minimum": 1, "maximum": MAX_DAYS_HEALTH}},
+    ),
+    ToolSpec(
+        "get_spo2",
+        get_spo2.__doc__ or "",
+        get_spo2,
+        {"days": {"type": "integer", "default": 7, "minimum": 1, "maximum": MAX_DAYS_HEALTH}},
+    ),
+    ToolSpec(
+        "get_hydration",
+        get_hydration.__doc__ or "",
+        get_hydration,
+        {"days": {"type": "integer", "default": 7, "minimum": 1, "maximum": MAX_DAYS_HEALTH}},
+    ),
+    ToolSpec(
+        "get_steps_history",
+        get_steps_history.__doc__ or "",
+        get_steps_history,
+        {"days": {"type": "integer", "default": 7, "minimum": 1, "maximum": MAX_DAYS_HEALTH}},
+    ),
+    ToolSpec("get_fitness_age", get_fitness_age.__doc__ or "", get_fitness_age, {}),
+    ToolSpec(
+        "download_activity_file",
+        download_activity_file.__doc__ or "",
+        download_activity_file,
+        {
+            "activity_id": {"type": "integer"},
+            "save_path": {"type": "string", "default": ""},
+        },
     ),
     ToolSpec(
         "get_full_snapshot",

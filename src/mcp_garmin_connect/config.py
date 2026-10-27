@@ -66,6 +66,11 @@ class Settings:
     cache_ttl_seconds: int
     garmin_max_concurrency: int = 6
     garmin_demo: bool = False
+    garmin_personal_api_key: str | None = None
+    garmin_auth_mode: str = "auto"
+    garmin_personal_token_cache: str = "~/.garminconnect/personal_api_token.json"
+    garmin_personal_base_url: str = "https://personal.connectapi.garmin.com"
+    garmin_personal_timeout_seconds: float = 20.0
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -100,7 +105,45 @@ class Settings:
             cache_ttl_seconds=max(0, _env_int("GARMIN_CACHE_TTL_SECONDS", 120)),
             garmin_max_concurrency=max(1, _env_int("GARMIN_MAX_CONCURRENCY", 6)),
             garmin_demo=_env_flag("GARMIN_DEMO"),
+            garmin_personal_api_key=os.getenv("GARMIN_PERSONAL_API_KEY") or None,
+            garmin_auth_mode=os.getenv("GARMIN_AUTH_MODE", "auto").strip().lower() or "auto",
+            garmin_personal_token_cache=os.path.normpath(
+                os.path.expanduser(
+                    os.getenv(
+                        "GARMIN_PERSONAL_TOKEN_CACHE", "~/.garminconnect/personal_api_token.json"
+                    )
+                )
+            ),
+            garmin_personal_base_url=os.getenv(
+                "GARMIN_PERSONAL_BASE_URL", "https://personal.connectapi.garmin.com"
+            ),
+            garmin_personal_timeout_seconds=float(
+                os.getenv("GARMIN_PERSONAL_TIMEOUT_SECONDS", "20") or 20
+            ),
         )
+
+    def require_personal_api_key(self) -> str:
+        if not self.garmin_personal_api_key:
+            raise RuntimeError(
+                "GARMIN_PERSONAL_API_KEY is not set. Create a key at "
+                "https://connect.garmin.com/app/settings/personalApiToken and put it in .env. "
+                "See docs/personal-api.md."
+            )
+        return self.garmin_personal_api_key
+
+    def resolved_auth_mode(self) -> str:
+        """Which Garmin backend to use: ``personal``, ``unofficial`` or ``demo``.
+
+        ``auto`` (the default) prefers the official Personal API when a key is
+        configured, because it is stable and rate-limit friendly, and falls back
+        to the email/password flow otherwise.
+        """
+        if self.garmin_demo:
+            return "demo"
+        mode = (self.garmin_auth_mode or "auto").strip().lower()
+        if mode in {"personal", "unofficial"}:
+            return mode
+        return "personal" if self.garmin_personal_api_key else "unofficial"
 
     def require_garmin_credentials(self) -> tuple[str, str]:
         if not self.garmin_email or not self.garmin_password:
