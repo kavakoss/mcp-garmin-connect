@@ -1,3 +1,12 @@
+## 0.3.2 — 2026-10-28
+
+### Fixed
+- **An expired Personal API key no longer takes the server down.** In hybrid mode
+  a failed Personal API login replaced the whole client, so `kava-life` and any
+  MCP client lost all Garmin data until the key was rotated. Hybrid now degrades to
+  email/password with a logged warning; shared reads fall back and personal-only
+  tools report the reason instead of killing startup.
+
 # Changelog
 
 ## 0.3.1 — 2026-10-28

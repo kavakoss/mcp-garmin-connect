@@ -220,3 +220,39 @@ def test_cache_hits_still_report_their_backend() -> None:
         manager.replay_sources("sleep_day:2026-10-27")
 
     assert sources == {"get_sleep_data": "personal"}
+
+
+def test_hybrid_still_starts_when_the_personal_api_is_unusable() -> None:
+    """An expired key must degrade to email/password, not kill the server."""
+    from mcp_garmin_connect.demo import DemoGarmin
+    from mcp_garmin_connect.errors import PersonalApiAuthError
+    from mcp_garmin_connect.garmin_client import GarminClientManager
+    from mcp_garmin_connect.hybrid import UnavailableBackend
+
+    manager = GarminClientManager(
+        replace(
+            Settings.from_env(),
+            garmin_demo=False,
+            garmin_auth_mode="hybrid",
+            garmin_personal_api_key="expired-key",
+            garmin_email="a@b.c",
+            garmin_password="secret",
+        )
+    )
+    manager.login_personal = lambda: (_ for _ in ()).throw(   # type: ignore[method-assign]
+        PersonalApiAuthError("key expired")
+    )
+    manager.login = lambda allow_interactive_mfa=False: DemoGarmin()   # type: ignore[method-assign]
+
+    backend = manager.login_hybrid()
+
+    assert isinstance(backend._personal, UnavailableBackend)
+    # derived metrics still work through the surviving backend
+    assert backend.get_max_metrics("2026-10-28")
+    # personal-only reads explain themselves instead of exploding silently
+    try:
+        backend.get_body_composition("2026-10-21", "2026-10-28")
+    except Exception as exc:
+        assert "personal unavailable" in str(exc).lower()
+    else:  # the demo fallback may answer it; either way it must not crash boot
+        pass

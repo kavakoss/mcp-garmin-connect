@@ -112,6 +112,35 @@ _FALLBACK_ERRORS = (PersonalApiUnsupported, PersonalApiHttpError, PersonalApiRat
 _FATAL_ERRORS = (PersonalApiAuthError,)
 
 
+class UnavailableBackend:
+    """Stands in for a backend that failed to initialise.
+
+    Used when the Personal API key is expired/revoked: the hybrid keeps serving
+    from the other backend instead of refusing to start, and calls that only the
+    missing backend could answer raise a clear, recorded error.
+    """
+
+    def __init__(self, backend_name: str, reason: str) -> None:
+        self.backend_name = backend_name
+        self.reason = reason
+
+    @property
+    def display_name(self) -> None:
+        return None
+
+    def close(self) -> None:
+        return None
+
+    def __getattr__(self, name: str) -> Any:
+        if name.startswith("_"):
+            raise AttributeError(name)
+
+        def unavailable(*_args: Any, **_kwargs: Any) -> Any:
+            raise PersonalApiUnsupported(f"{self.backend_name} unavailable: {self.reason}")
+
+        return unavailable
+
+
 class HybridBackend:
     """Routes each client call to the backend that owns that data set."""
 

@@ -104,10 +104,22 @@ class GarminClientManager:
         return backend
 
     def login_hybrid(self) -> Any:
-        """Run both backends and route each call to the one that owns the data."""
-        from .hybrid import HybridBackend
+        """Run both backends and route each call to the one that owns the data.
 
-        personal = self.login_personal()
+        A broken Personal API key must not take the whole server down: someone
+        whose key expired overnight should still get their derived metrics while
+        they rotate it. The personal half is replaced by a stub that raises a
+        recorded, explicit error, so shared reads fall back and personal-only
+        tools say why.
+        """
+        from .hybrid import HybridBackend, UnavailableBackend
+
+        try:
+            personal: Any = self.login_personal()
+        except Exception as exc:  # noqa: BLE001 - availability beats purity here
+            reason = f"{type(exc).__name__}: {exc}"
+            log.warning("Personal API unavailable, continuing with email/password only: %s", reason)
+            personal = UnavailableBackend("personal", reason)
         unofficial = self.login(allow_interactive_mfa=False)
         log.info("Garmin hybrid backend active (official Personal API + email/password)")
         return HybridBackend(personal=personal, unofficial=unofficial)
