@@ -918,6 +918,11 @@ def get_activity_splits(activity_id: int) -> dict[str, Any]:
         "avg_cadence": round_number(sum(cadences) / len(cadences), 0) if cadences else None,
         "elevation_gain_m": round_number(sum(elevations), 1) if elevations else None,
     }
+    origin = {}
+    if isinstance(raw, dict):
+        for key in ("lap_source", "note"):
+            if raw.get(key):
+                origin[key] = raw[key]
     return {
         "activity_id": activity_id,
         "lap_count": len(laps),
@@ -925,6 +930,7 @@ def get_activity_splits(activity_id: int) -> dict[str, Any]:
         "summary": summary,
         "hr_drift": hr_drift,
         **({"hr_drift_note": hr_drift_note} if hr_drift_note else {}),
+        **origin,
         **_errors_payload(errors),
     }
 

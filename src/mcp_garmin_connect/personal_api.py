@@ -24,6 +24,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import time
 from dataclasses import dataclass
 from datetime import date
@@ -200,15 +201,12 @@ class PersonalApiAuthenticator:
                 url=str(response.request.url),
             )
 
-        try:
-            body = response.json()
-        except ValueError as exc:
-            raise PersonalApiHttpError("Personal API returned a non-JSON token response") from exc
-
-        token = _extract_access_token(body)
+        token = _token_from_response(response)
         if not token:
             raise PersonalApiHttpError(
-                "Personal API token response contained no access token", status_code=200
+                "Personal API token response contained no recognisable access token",
+                status_code=response.status_code,
+                url=str(response.request.url),
             )
 
         bearer = BearerToken(access_token=token, expires_at=jwt_expiry(token))
@@ -218,14 +216,42 @@ class PersonalApiAuthenticator:
 
 def _extract_access_token(body: Any) -> str | None:
     if isinstance(body, str):
-        return body.strip() or None
+        return _plausible_token(body)
     if not isinstance(body, dict):
         return None
-    for key in ("access_token", "accessToken", "token"):
+    for key in ("access_token", "accessToken", "token", "id_token"):
         value = body.get(key)
         if isinstance(value, str) and value.strip():
-            return value.strip()
+            return _plausible_token(value)
     return None
+
+
+_TOKEN_SHAPE = re.compile(r"^[A-Za-z0-9._~+/=:\-]{20,8192}$")
+
+
+def _plausible_token(candidate: str) -> str | None:
+    """Accept a token only if it looks like one (base64url/JWT charset, no HTML)."""
+    token = candidate.strip().strip('"').strip()
+    return token if _TOKEN_SHAPE.match(token) else None
+
+
+def _token_from_response(response: Any) -> str | None:
+    """Pull the access token out of the token response.
+
+    Garmin's documented exchange returns the bearer token as a **bare string**
+    with ``content-type: text/plain`` (verified 2026-10-28), while other accounts
+    and older behaviour use a JSON body like ``{"access_token": "..."}``. Accept
+    both instead of assuming JSON — that assumption cost a round trip here.
+    """
+    content_type = (response.headers.get("content-type") or "").lower()
+    text = (response.text or "").strip()
+
+    if "json" in content_type or text.startswith("{") or text.startswith('"'):
+        try:
+            return _extract_access_token(response.json())
+        except ValueError:
+            pass  # fall through to the plain-text interpretation
+    return _plausible_token(text)
 
 
 class PersonalApiClient:
@@ -327,7 +353,161 @@ def _first(payload: Any) -> dict[str, Any]:
             if isinstance(item, dict):
                 return item
         return {}
+    if isinstance(payload, dict) and isinstance(payload.get("data"), list):
+        return _first(payload["data"])
     return payload if isinstance(payload, dict) else {}
+
+
+def _flatten_values(item: dict[str, Any]) -> dict[str, Any]:
+    """The stress stats endpoint nests its numbers under ``values``."""
+    values = item.get("values")
+    if isinstance(values, dict):
+        merged = {key: value for key, value in item.items() if key != "values"}
+        merged.update(values)
+        return merged
+    return item
+
+
+CADENCE_KEYS = ("directDoubleCadence", "directRunCadence", "directBikeCadence")
+ELEVATION_DEADBAND_M = 0.5
+
+
+def _metric_index(payload: dict[str, Any]) -> dict[str, int]:
+    descriptors = payload.get("metricDescriptors")
+    index: dict[str, int] = {}
+    if isinstance(descriptors, list):
+        for position, descriptor in enumerate(descriptors):
+            if isinstance(descriptor, dict):
+                key = descriptor.get("key")
+                if isinstance(key, str):
+                    index[key] = position
+    return index
+
+
+def laps_from_details(
+    payload: dict[str, Any], lap_distance_m: float = 1000.0
+) -> list[dict[str, Any]]:
+    """Rebuild per-km laps from Garmin's per-sample activity stream.
+
+    Samples carry cumulative distance/time plus instantaneous HR, cadence and
+    elevation. Lap boundaries are interpolated between samples, so pace is not
+    quantised to the 1-2 s sample interval.
+    """
+    rows = payload.get("activityDetailMetrics")
+    index = _metric_index(payload)
+    if not isinstance(rows, list) or not rows or "sumDistance" not in index:
+        return []
+
+    def value(row: dict[str, Any], key: str) -> float | None:
+        position = index.get(key)
+        metrics = row.get("metrics")
+        if position is None or not isinstance(metrics, list) or position >= len(metrics):
+            return None
+        raw = metrics[position]
+        return float(raw) if isinstance(raw, (int, float)) else None
+
+    samples: list[dict[str, float]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        distance = value(row, "sumDistance")
+        if distance is None:
+            continue
+        sample = {"distance": distance, "time": value(row, "sumDuration")}
+        for key in ("directHeartRate", *CADENCE_KEYS, "directElevation"):
+            sample[key] = value(row, key)
+        samples.append(sample)
+    if len(samples) < 2:
+        return []
+
+    total_distance = samples[-1]["distance"]
+    if not total_distance or total_distance <= 0:
+        return []
+
+    def time_at(distance: float) -> float | None:
+        first_time, last_time = samples[0]["time"], samples[-1]["time"]
+        if distance <= samples[0]["distance"]:
+            return first_time
+        if distance >= samples[-1]["distance"]:
+            return last_time
+        for previous, current in zip(samples, samples[1:], strict=False):
+            start, end = previous["distance"], current["distance"]
+            if start <= distance <= end and end > start:
+                t0, t1 = previous["time"], current["time"]
+                if t0 is None or t1 is None:
+                    return None
+                return t0 + (distance - start) / (end - start) * (t1 - t0)
+        return last_time
+
+    laps: list[dict[str, Any]] = []
+    full_laps = int(total_distance // lap_distance_m)
+    boundaries = [boundary * lap_distance_m for boundary in range(0, full_laps + 1)]
+    boundaries.append(total_distance)
+    for position, (start_m, end_m) in enumerate(
+        zip(boundaries, boundaries[1:], strict=False)
+    ):
+        if end_m - start_m < 1:
+            continue
+        is_final_lap = position == len(boundaries) - 2
+
+        def in_lap(
+            distance: float,
+            start_m: float = start_m,
+            end_m: float = end_m,
+            is_final: bool = is_final_lap,
+        ) -> bool:
+            # The last sample sits exactly on the final boundary; it belongs here.
+            return start_m <= distance < end_m or (is_final and distance == end_m)
+
+        start_time, end_time = time_at(start_m), time_at(end_m)
+        duration = (
+            end_time - start_time if start_time is not None and end_time is not None else None
+        )
+        hearts = [
+            sample["directHeartRate"]
+            for sample in samples
+            if sample["directHeartRate"] is not None and in_lap(sample["distance"])
+        ]
+        cadences = [
+            next(
+                (sample[key] for key in CADENCE_KEYS if sample.get(key) is not None),
+                None,
+            )
+            for sample in samples
+            if in_lap(sample["distance"])
+        ]
+        cadences = [value for value in cadences if value is not None]
+        elevations = [
+            sample["directElevation"]
+            for sample in samples
+            if sample["directElevation"] is not None and start_m <= sample["distance"] <= end_m
+        ]
+        # Elevation samples are noisy at 1-2 s granularity; without a deadband the
+        # positive deltas inflate wildly (this 7 km run summed to 24 m vs Garmin's
+        # 11 m). Count a climb only once it clears the deadband.
+        gain = 0.0
+        reference = elevations[0] if elevations else None
+        for elevation in elevations[1:]:
+            if reference is None:
+                reference = elevation
+                continue
+            delta = elevation - reference
+            if abs(delta) >= ELEVATION_DEADBAND_M:
+                if delta > 0:
+                    gain += delta
+                reference = elevation
+        lap: dict[str, Any] = {
+            "distance": end_m - start_m,
+            "duration": duration,
+            "averageHR": round(sum(hearts) / len(hearts)) if hearts else None,
+            "maxHR": round(max(hearts)) if hearts else None,
+            "averageRunCadence": round(sum(cadences) / len(cadences), 1) if cadences else None,
+            "elevationGain": round(gain, 1) if elevations else None,
+        }
+        if duration and duration > 0:
+            lap["averageSpeed"] = (end_m - start_m) / duration
+        laps.append(lap)
+    return laps
 
 
 class PersonalApiBackend:
@@ -369,13 +549,19 @@ class PersonalApiBackend:
             return raw
         return {"hrvSummary": raw} if isinstance(raw, dict) else {}
 
-    def get_rhr_day(self, cdate: str) -> dict[str, Any]:
+    def _daily_summary(self, cdate: str) -> dict[str, Any]:
         raw = self._client.get(
             "/usersummary-service/v2/dailysummaries",
             {"startDate": cdate, "endDate": cdate},
         )
-        item = _first(raw)
-        value = item.get("restingHeartRate")
+        return _first(raw)
+
+    def get_rhr_day(self, cdate: str) -> dict[str, Any]:
+        item = self._daily_summary(cdate)
+        heart_rate = item.get("heartRate")
+        value = heart_rate.get("restingValue") if isinstance(heart_rate, dict) else None
+        if value is None:
+            value = item.get("restingHeartRate")
         if value is None:
             metrics = ((item.get("allMetrics") or {}).get("metricsMap") or {}).get(
                 "WELLNESS_RESTING_HEART_RATE"
@@ -390,8 +576,36 @@ class PersonalApiBackend:
         return item
 
     def get_all_day_stress(self, cdate: str) -> dict[str, Any]:
-        raw = self._client.get(f"/usersummary-service/stats/stress/daily/{cdate}/{cdate}")
-        return _first(raw)
+        """Merge both official stress shapes into the flat dict the tools expect.
+
+        ``/stats/stress/daily`` has real per-bucket durations but no maximum, and
+        it nests them under ``values``. ``/dailysummaries`` has average + maximum
+        plus proportions of the tracked day. Neither alone is complete.
+        """
+        stats = _flatten_values(
+            _first(self._client.get(f"/usersummary-service/stats/stress/daily/{cdate}/{cdate}"))
+        )
+        summary = self._daily_summary(cdate)
+        stress = summary.get("stress") if isinstance(summary.get("stress"), dict) else {}
+        chronology = summary.get("wellnessChronology")
+        tracked_seconds = None
+        if isinstance(chronology, dict) and isinstance(
+            chronology.get("totalDurationInMillis"), (int, float)
+        ):
+            tracked_seconds = chronology["totalDurationInMillis"] / 1000
+
+        merged = dict(stats)
+        if merged.get("avgStressLevel") is None:
+            merged["avgStressLevel"] = stress.get("avgLevel") or stats.get("overallStressLevel")
+        if merged.get("maxStressLevel") is None:
+            merged["maxStressLevel"] = stress.get("maxLevel")
+        # The stats endpoint has no "activity" bucket; derive it from the tracked
+        # day so the field is not silently zero.
+        if merged.get("activityStressDuration") is None and tracked_seconds:
+            share = stress.get("activityProportion")
+            if isinstance(share, (int, float)):
+                merged["activityStressDuration"] = round(share * tracked_seconds)
+        return merged
 
     def get_body_battery(self, start: str, end: str) -> list[dict[str, Any]]:
         raw = self._client.get(
@@ -413,16 +627,34 @@ class PersonalApiBackend:
         return raw if isinstance(raw, dict) else {}
 
     def get_activity_splits(self, activity_id: int) -> dict[str, Any]:
-        """Personal API exposes ``splitSummaries`` inside the activity payload.
+        """Per-kilometre laps for one activity.
 
-        Garmin's dedicated splits endpoint is undocumented for this tier, so the
-        activity detail is the source. Field names match the lap shape the
-        normalizer already understands (distance, duration, averageHR, ...).
+        ``/activity-service/activity/{id}/splits`` is 404 on this tier and the
+        ``splitSummaries`` in the activity payload collapse to one whole-activity
+        entry. ``/details`` does return the raw per-sample stream (distance, time,
+        HR, cadence, elevation), so the laps are rebuilt from that and keep the
+        same field names the normalizer already understands. Falls back to the
+        collapsed summary — labelled, never silently passed off as laps.
         """
+        try:
+            details = self._client.get(f"/activity-service/activity/{activity_id}/details")
+        except PersonalApiHttpError:
+            details = None
+        laps = laps_from_details(details) if isinstance(details, dict) else []
+        if laps:
+            return {"lapDTOs": laps, "lap_source": "details"}
+
         detail = self.get_activity(activity_id)
         splits = detail.get("splitSummaries")
-        if isinstance(splits, list):
-            return {"lapDTOs": [item for item in splits if isinstance(item, dict)]}
+        if isinstance(splits, list) and splits:
+            return {
+                "lapDTOs": [item for item in splits if isinstance(item, dict)],
+                "lap_source": "activity_summary",
+                "note": (
+                    "Garmin's Personal API does not expose per-km laps for this activity; "
+                    "this is the whole-activity summary as a single lap."
+                ),
+            }
         return {}
 
     def get_activity_workouts(self, activity_id: int) -> Any:

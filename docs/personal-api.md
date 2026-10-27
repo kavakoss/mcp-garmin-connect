@@ -142,7 +142,8 @@ table at the top: on the personal backend those fields come back `null` with an
 | stress | `/usersummary-service/stats/stress/daily/{date}/{date}` |
 | body battery | `/wellness-service/wellness/bodyBattery/reports/daily` |
 | activities | `/activitylist-service/activities/search/activities` |
-| activity detail / splits | `/activity-service/activity/{id}` (`splitSummaries`) |
+| activity detail | `/activity-service/activity/{id}` |
+| per-km splits | `/activity-service/activity/{id}/details` (rebuilt from the sample stream; Garmin's own splits endpoint is 404 on this tier) |
 | activity file | `/download-service/files/activity/{id}` |
 | weight / body composition | `/weight-service/weight/range/{start}/{end}` |
 | SpO2 | `/wellness-service/wellness/daily/spo2acclimation/{date}` |
@@ -153,3 +154,23 @@ table at the top: on the personal backend those fields come back `null` with an
 | profile | `/userprofile-service/userprofile/settings` |
 
 Full reference: <https://developer.garmin.com/gc-developer-program/personal/swagger-docs/>.
+
+## Verified response shapes (2026-10-28)
+
+The Swagger pages describe fields but not the envelope, and three of them bite:
+
+| Endpoint | What actually arrives |
+|---|---|
+| token exchange | **bare JWT string**, `content-type: text/plain` (not JSON) |
+| `/usersummary-service/v2/dailysummaries` | `{"data": [{...}]}`; resting HR at `data[0].heartRate.restingValue`, stress at `data[0].stress.{avgLevel,maxLevel}` |
+| `/usersummary-service/stats/stress/daily/{d}/{d}` | `[{"values": {...}}]` — durations only, no maximum |
+| `/activity-service/activity/{id}/splits` | **404**; `splitSummaries` in the activity payload is a single whole-activity lap |
+| `/activity-service/activity/{id}/details` | per-sample stream (`sumDistance`, `sumDuration`, `directHeartRate`, `directDoubleCadence`, `directElevation`) — laps are rebuilt from it |
+| `/weight-service/weight/range/...` | `dailyWeightSummaries` is empty unless you log weight in Garmin Connect |
+
+Re-check any of these with:
+
+```bash
+garmin-mcp personal-api --probe /usersummary-service/v2/dailysummaries \
+  --params startDate=2026-10-27,endDate=2026-10-27
+```

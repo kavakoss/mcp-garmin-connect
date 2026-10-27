@@ -1,5 +1,39 @@
 # Changelog
 
+## 0.3.1 — 2026-10-28
+
+Fixes from testing 0.3.0 against a real Garmin account — the Personal API does
+not answer the way its Swagger prose suggests.
+
+### Fixed
+- **Token exchange rejected the real response.** Garmin returns the bearer token
+  as a **bare string with `content-type: text/plain`**, not JSON, so every
+  authenticated call failed with "Personal API returned a non-JSON token
+  response". The parser now accepts a plain-text token, a JSON body and a JSON
+  string, and rejects HTML/error pages instead of treating them as a token.
+- **Resting HR was always null.** The value is at
+  `data[0].heartRate.restingValue` in `/usersummary-service/v2/dailysummaries`,
+  not at the top level. Falls back to `restingHeartRate` and to the metrics map.
+- **Stress was always null.** `/stats/stress/daily` nests durations under
+  `values` and has no maximum; `/dailysummaries` has average + maximum but no
+  durations. Both are merged now, and the missing activity bucket is derived from
+  the tracked-day proportion.
+- **`get_activity_splits` returned one whole-activity lap.** The splits endpoint
+  is 404 on this tier and `splitSummaries` collapse to a single entry. Per-km
+  laps are now rebuilt from the `/details` sample stream (boundary-interpolated
+  pace, HR mean/max per lap, cadence and elevation), matching Garmin's own lap
+  output to within a second per km. Falls back to the collapsed summary clearly
+  labelled, never passed off as laps.
+- Cadence averaged every cadence key together (double cadence 165 spm plus
+  per-leg 82 spm reported as 123); elevation summed raw sample noise (24 m for an
+  11 m climb). Both fixed: one cadence key per sample, 0.5 m elevation deadband.
+
+### Notes
+- `get_body_composition` only reports what is logged in Garmin Connect. An
+  account that never enters weight there gets an empty series (not an error).
+- Shapes above were verified against a live account on 2026-10-28; `--probe`
+  stays the way to re-check if Garmin changes them again.
+
 ## 0.3.0 — 2026-10-27
 
 ### Added

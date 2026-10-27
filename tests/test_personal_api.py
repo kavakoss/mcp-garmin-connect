@@ -207,26 +207,122 @@ def test_sleep_payload_is_wrapped_for_the_tool_layer(tmp_path: Path) -> None:
 
 
 def test_resting_heart_rate_comes_from_daily_summaries(tmp_path: Path) -> None:
+    """The value lives at data[0].heartRate.restingValue, not restingHeartRate."""
     backend = _backend(
         tmp_path,
-        {"/usersummary-service/v2/dailysummaries": [{"restingHeartRate": 58}]},
+        {
+            "/usersummary-service/v2/dailysummaries": {
+                "data": [{"calendarDate": "2026-10-26", "heartRate": {"restingValue": 61}}]
+            }
+        },
     )
-    assert backend.get_rhr_day("2026-10-26")["restingHeartRate"] == 58
+    assert backend.get_rhr_day("2026-10-26")["restingHeartRate"] == 61
+
+
+def test_splits_are_computed_from_the_sample_stream(tmp_path: Path) -> None:
+    """Per-km laps are rebuilt from /details; boundaries are interpolated."""
+    metrics = [
+        {"sumDistance": 0.0, "sumDuration": 0.0, "directHeartRate": 130, "directDoubleCadence": 160,
+         "directElevation": 10.0},
+        {"sumDistance": 500.0, "sumDuration": 300.0, "directHeartRate": 140,
+         "directDoubleCadence": 166, "directElevation": 12.0},
+        {"sumDistance": 1000.0, "sumDuration": 600.0, "directHeartRate": 150,
+         "directDoubleCadence": 168, "directElevation": 10.0},
+        {"sumDistance": 1500.0, "sumDuration": 840.0, "directHeartRate": 155,
+         "directDoubleCadence": 170, "directElevation": 14.0},
+    ]
+    keys = list(metrics[0].keys())
+    details = {
+        "metricDescriptors": [{"key": key} for key in keys],
+        "activityDetailMetrics": [
+            {"metrics": [sample[key] for key in keys]} for sample in metrics
+        ],
+    }
+    backend = _backend(
+        tmp_path,
+        {
+            "/activity-service/activity/42/details": details,
+            "/activity-service/activity/42": {"activityId": 42, "splitSummaries": []},
+        },
+    )
+
+    splits = backend.get_activity_splits(42)
+
+    assert splits["lap_source"] == "details"
+    laps = splits["lapDTOs"]
+    assert len(laps) == 2
+    assert laps[0]["distance"] == 1000.0
+    assert laps[0]["duration"] == 600.0
+    assert laps[1]["distance"] == 500.0
+    assert laps[1]["duration"] == 240.0
+    # mean/max over the samples inside each lap (0 m + 500 m -> 135; 1000/1500 -> 152)
+    assert laps[0]["averageHR"] == 135
+    assert laps[1]["averageHR"] == 152
+    assert laps[1]["maxHR"] == 155
+    assert laps[0]["elevationGain"] == 2.0
+
+
+def test_splits_fall_back_to_the_collapsed_summary_with_a_note(tmp_path: Path) -> None:
+    backend = _backend(
+        tmp_path,
+        {
+            "/activity-service/activity/43/details": {"detailsAvailable": False},
+            "/activity-service/activity/43": {
+                "activityId": 43,
+                "splitSummaries": [{"distance": 5000.0, "duration": 1800.0, "averageHR": 150}],
+            },
+        },
+    )
+
+    splits = backend.get_activity_splits(43)
+
+    assert splits["lap_source"] == "activity_summary"
+    assert "per-km laps" in splits["note"]
+    assert splits["lapDTOs"][0]["averageHR"] == 150
 
 
 def test_stress_and_body_battery_shapes(tmp_path: Path) -> None:
+    """Real shapes (verified 2026-10-28): stats nests durations under `values`,
+    the max only exists in dailysummaries, which itself is wrapped in `data`."""
     backend = _backend(
         tmp_path,
         {
             "/usersummary-service/stats/stress/daily": [
-                {"calendarDate": "2026-10-26", "avgStressLevel": 41, "maxStressLevel": 99}
+                {
+                    "calendarDate": "2026-10-26",
+                    "values": {
+                        "overallStressLevel": 41,
+                        "restStressDuration": 18660,
+                        "lowStressDuration": 21660,
+                        "mediumStressDuration": 12180,
+                        "highStressDuration": 8280,
+                    },
+                }
             ],
+            "/usersummary-service/v2/dailysummaries": {
+                "data": [
+                    {
+                        "calendarDate": "2026-10-26",
+                        "stress": {
+                            "avgLevel": 41,
+                            "maxLevel": 99,
+                            "activityProportion": 0.17,
+                        },
+                        "wellnessChronology": {"totalDurationInMillis": 84600000},
+                    }
+                ]
+            },
             "/wellness-service/wellness/bodyBattery/reports/daily": [
                 {"date": "2026-10-26T00:00:00.0", "charged": 76, "drained": 63}
             ],
         },
     )
-    assert backend.get_all_day_stress("2026-10-26")["avgStressLevel"] == 41
+    stress = backend.get_all_day_stress("2026-10-26")
+
+    assert stress["avgStressLevel"] == 41
+    assert stress["maxStressLevel"] == 99
+    assert stress["restStressDuration"] == 18660
+    assert stress["activityStressDuration"] == round(0.17 * 84600)
     assert backend.get_body_battery("2026-10-19", "2026-10-26")[0]["charged"] == 76
 
 
@@ -316,3 +412,42 @@ def _fingerprint(key: str) -> str:
     import hashlib
 
     return hashlib.sha256(key.encode()).hexdigest()[:16]
+
+
+def test_token_endpoint_may_answer_with_a_bare_plain_text_jwt(tmp_path: Path) -> None:
+    """Garmin returns the bearer token as text/plain, not JSON (verified 2026-10-28)."""
+    issued = _jwt(int(time.time()) + 86_400)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text=issued, headers={"content-type": "text/plain"})
+
+    auth = _authenticator(tmp_path, httpx.MockTransport(handler))
+    token = auth.obtain_token()
+
+    assert token.access_token == issued
+    assert token.expires_at is not None
+
+
+def test_token_endpoint_may_answer_with_a_json_string(tmp_path: Path) -> None:
+    issued = _jwt(int(time.time()) + 86_400)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, content=json.dumps(issued).encode(), headers={"content-type": "text/plain"}
+        )
+
+    auth = _authenticator(tmp_path, httpx.MockTransport(handler))
+    assert auth.obtain_token().access_token == issued
+
+
+def test_unrecognisable_token_body_raises(tmp_path: Path) -> None:
+    from mcp_garmin_connect.errors import PersonalApiHttpError
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, text="<html>maintenance</html>", headers={"content-type": "text/html"}
+        )
+
+    auth = _authenticator(tmp_path, httpx.MockTransport(handler))
+    with pytest.raises(PersonalApiHttpError):
+        auth.obtain_token()
