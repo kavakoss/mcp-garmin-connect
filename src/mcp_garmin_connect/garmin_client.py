@@ -28,6 +28,10 @@ class GarminClientManager:
         self._client: Any = None
         self._login_lock = Lock()
         self._request_semaphore = BoundedSemaphore(max(1, self.settings.garmin_max_concurrency))
+        # Which backend filled each cached endpoint, so a cache hit can still be
+        # attributed to a backend (hybrid mode reports per-section data_source).
+        self._cache_sources: dict[str, dict[str, str]] = {}
+        self._cache_sources_lock = Lock()
 
     @property
     def backend(self) -> str:
@@ -131,6 +135,24 @@ class GarminClientManager:
 
     def cached(self, key: str, factory: Callable[[], Any]) -> Any:
         return self.cache.get_or_set(key, factory)
+
+    def remember_sources(self, key: str, sources: dict[str, str] | None) -> None:
+        """Record which backend answered the calls behind one cache key."""
+        if not sources:
+            return
+        with self._cache_sources_lock:
+            if len(self._cache_sources) > 4096:
+                self._cache_sources.clear()
+            self._cache_sources[key] = dict(sources)
+
+    def replay_sources(self, key: str) -> None:
+        """Attribute a cache hit to the backend that originally filled it."""
+        from .hybrid import merge_usage
+
+        with self._cache_sources_lock:
+            sources = self._cache_sources.get(key)
+        if sources:
+            merge_usage(sources)
 
     def safe_call(
         self,

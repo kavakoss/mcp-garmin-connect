@@ -123,3 +123,100 @@ def test_hybrid_requires_both_credential_sets() -> None:
     assert both.resolved_auth_mode() == "hybrid"
     assert only_key.garmin_personal_api_key and not only_key.garmin_email
     assert only_password.garmin_email and not only_password.garmin_personal_api_key
+
+
+# --------------------------------------------------------------- snapshot tagging
+
+
+def test_usage_capture_records_the_backend_per_method() -> None:
+    from mcp_garmin_connect.hybrid import capture_usage
+
+    backend, _, _ = _hybrid()
+
+    with capture_usage() as sources:
+        backend.get_sleep_data("2026-10-27")
+        backend.get_max_metrics("2026-10-27")
+
+    assert sources == {
+        "get_sleep_data": "personal",
+        "get_max_metrics": "unofficial",
+    }
+
+
+def test_snapshot_section_is_tagged_with_one_source() -> None:
+    from mcp_garmin_connect.tools import _section_with_source
+
+    backend, _, _ = _hybrid()
+    section = _section_with_source(lambda: backend.get_sleep_data("2026-10-27"), "hybrid")
+
+    assert section["data_source"] == "personal"
+
+
+def test_snapshot_section_marks_sections_that_needed_both_backends() -> None:
+    from mcp_garmin_connect.tools import _section_with_source
+
+    backend, _, _ = _hybrid()
+
+    def mixed_section() -> dict[str, object]:
+        backend.get_sleep_data("2026-10-27")
+        backend.get_max_metrics("2026-10-27")
+        return {"note": "needs wellness and derived metrics"}
+
+    section = _section_with_source(mixed_section, "hybrid")
+
+    assert section["data_source"] == "personal+unofficial"
+    assert section["source_detail"] == {
+        "get_max_metrics": "unofficial",
+        "get_sleep_data": "personal",
+    }
+
+
+def test_full_snapshot_reports_sources_for_every_section() -> None:
+    from mcp_garmin_connect.demo import DemoGarmin
+    from mcp_garmin_connect.garmin_client import reset_manager
+    from mcp_garmin_connect.tools import get_full_snapshot
+
+    manager = reset_manager(
+        replace(
+            Settings.from_env(),
+            garmin_demo=False,
+            garmin_auth_mode="hybrid",
+            garmin_personal_api_key="key",
+            garmin_email="a@b.c",
+            garmin_password="secret",
+        )
+    )
+    # Both halves point at the demo client so the snapshot wiring is exercised
+    # without network access; routing/tagging is covered by the tests above.
+    manager._client = HybridBackend(personal=DemoGarmin(), unofficial=DemoGarmin())
+
+    snapshot = get_full_snapshot(activity_days=14, load_days=14)
+
+    assert snapshot["auth_backend"] == "hybrid"
+    assert snapshot["hybrid_fallbacks"] == []
+    assert set(snapshot["section_sources"]) >= {
+        "recovery",
+        "sleep",
+        "recent_activities",
+        "fitness",
+        "zones",
+        "personal_records",
+    }
+    for name, source in snapshot["section_sources"].items():
+        assert source, f"{name} has no source"
+    for name, section in snapshot.items():
+        if isinstance(section, dict) and name not in {"section_sources"}:
+            assert "error" not in section, f"{name} failed: {section}"
+
+
+def test_cache_hits_still_report_their_backend() -> None:
+    from mcp_garmin_connect.garmin_client import reset_manager
+    from mcp_garmin_connect.hybrid import capture_usage
+
+    manager = reset_manager(replace(Settings.from_env(), garmin_demo=True))
+
+    with capture_usage() as sources:
+        manager.remember_sources("sleep_day:2026-10-27", {"get_sleep_data": "personal"})
+        manager.replay_sources("sleep_day:2026-10-27")
+
+    assert sources == {"get_sleep_data": "personal"}

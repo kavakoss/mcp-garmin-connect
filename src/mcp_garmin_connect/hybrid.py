@@ -16,7 +16,9 @@ answered.
 
 from __future__ import annotations
 
+import contextvars
 import logging
+from contextlib import contextmanager
 from typing import Any
 
 from .errors import (
@@ -27,6 +29,47 @@ from .errors import (
 )
 
 log = logging.getLogger("mcp-garmin-connect")
+
+# Record of "which backend answered which method" for the current capture scope.
+# A ContextVar (not a plain global) because ``get_full_snapshot`` runs sections in
+# parallel, and because the day-loop helpers fan out into a nested thread pool:
+# child threads inherit the reference, so their calls land in the same dict.
+_usage_var: contextvars.ContextVar[dict[str, str] | None] = contextvars.ContextVar(
+    "garmin_usage_sources", default=None
+)
+
+
+@contextmanager
+def capture_usage() -> Any:
+    """Collect ``{method: backend}`` for calls made inside the block."""
+    sources: dict[str, str] = {}
+    token = _usage_var.set(sources)
+    try:
+        yield sources
+    finally:
+        _usage_var.reset(token)
+
+
+def capture_call(fn: Any, *args: Any, **kwargs: Any) -> tuple[Any, dict[str, str]]:
+    """Run ``fn`` and return ``(result, {method: backend})`` for the calls it made."""
+    with capture_usage() as sources:
+        result = fn(*args, **kwargs)
+    return result, dict(sources)
+
+
+def merge_usage(sources: dict[str, str]) -> None:
+    """Fold known sources into the active capture scope (used for cache hits)."""
+    current = _usage_var.get()
+    if current is not None and sources:
+        current.update(sources)
+
+
+def _record(method: str, backend_name: str) -> None:
+    sources = _usage_var.get()
+    if sources is not None:
+        sources[method] = backend_name
+
+
 
 # Wellness and raw-recording reads: the official API owns these.
 PERSONAL_METHODS = frozenset(
@@ -104,23 +147,25 @@ class HybridBackend:
             raise AttributeError(name)
         personal_fn = getattr(self._personal, name, None)
         unofficial_fn = getattr(self._unofficial, name, None)
+        personal_name = getattr(self._personal, "backend_name", "personal")
+        unofficial_name = getattr(self._unofficial, "backend_name", "unofficial")
         preferred = (
-            (personal_fn, unofficial_fn)
+            [(personal_name, personal_fn), (unofficial_name, unofficial_fn)]
             if name in PERSONAL_METHODS
-            else (unofficial_fn, personal_fn)
+            else [(unofficial_name, unofficial_fn), (personal_name, personal_fn)]
         )
-        available = [fn for fn in preferred if callable(fn)]
+        available = [(backend, fn) for backend, fn in preferred if callable(fn)]
         if not available:
             raise AttributeError(name)
         return _make_router(name, available)
 
 
-def _make_router(name: str, available: list[Any]) -> Any:
+def _make_router(name: str, available: list[tuple[str, Any]]) -> Any:
     def call(*args: Any, **kwargs: Any) -> Any:
         last_error: Exception | None = None
-        for index, fn in enumerate(available):
+        for index, (backend_name, fn) in enumerate(available):
             try:
-                return fn(*args, **kwargs)
+                result = fn(*args, **kwargs)
             except _FATAL_ERRORS:
                 raise
             except _FALLBACK_ERRORS as exc:
@@ -133,6 +178,9 @@ def _make_router(name: str, available: list[Any]) -> Any:
                 if index == len(available) - 1:
                     break
                 log.info("%s failed (%s), trying the other backend", name, exc)
+            else:
+                _record(name, backend_name)
+                return result
         if last_error is not None:
             raise last_error
         raise AttributeError(name)

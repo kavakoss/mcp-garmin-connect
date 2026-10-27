@@ -71,6 +71,13 @@ GARMIN_EMAIL=you@example.com
 GARMIN_PASSWORD=your-password
 ```
 
+Hybrid mode is visible in the output rather than silent: `get_full_snapshot`
+tags every section with `data_source` (`personal`, `unofficial`, or
+`personal+unofficial`), keeps a `source_detail` map of endpoint → backend for
+mixed sections, lists `hybrid_fallbacks`, and reports `auth_backend` plus
+`section_sources` at the top level. Attribution survives the endpoint cache, so
+a section served from cache still says which backend filled it.
+
 Check it with:
 
 ```bash

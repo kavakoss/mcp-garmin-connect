@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextvars
 import os
 import re
 from collections import defaultdict
@@ -12,6 +13,7 @@ from pydantic import Field
 
 from .config import MAX_ACTIVITY_LIMIT, MAX_DAYS_ACTIVITIES, MAX_DAYS_HEALTH
 from .garmin_client import date_range_iso, get_manager, today_iso
+from .hybrid import capture_call
 from .normalizers import (
     activity_type_key,
     format_duration,
@@ -85,9 +87,17 @@ def _endpoint(
     manager = get_manager()
 
     def cached_factory() -> Any:
-        return manager.safe_call(factory, default=_FAILED, label=label, errors=errors)
+        # capture_call keeps hybrid attribution working: the factory may run in a
+        # different thread (day loops) or not at all (cache hit -> replay below).
+        value, sources = capture_call(
+            manager.safe_call, factory, default=_FAILED, label=label, errors=errors
+        )
+        if value is not _FAILED:
+            manager.remember_sources(key, sources)
+        return value
 
     value = manager.cached(key, cached_factory)
+    manager.replay_sources(key)
     if value is _FAILED:
         manager.cache.delete(key)
         return default
@@ -97,8 +107,16 @@ def _endpoint(
 def _fetch_days(dates: list[str], fetch: Callable[[str], Any], max_workers: int = 4) -> list[Any]:
     if len(dates) <= 1:
         return [fetch(day) for day in dates]
+    # ContextVars are not inherited by thread-pool workers, and copying inside the
+    # worker would copy the worker's empty context. Copy here, in the parent, so
+    # hybrid usage capture still sees the calls made by the day loops.
+    contexts = [contextvars.copy_context() for _ in dates]
     with ThreadPoolExecutor(max_workers=min(max_workers, len(dates))) as ex:
-        return list(ex.map(fetch, dates))
+        futures = [
+            ex.submit(context.run, fetch, day)
+            for context, day in zip(contexts, dates, strict=True)
+        ]
+        return [future.result() for future in futures]
 
 
 def _sleep_day(day: str, errors: ErrorList | None = None) -> dict[str, Any]:
@@ -1387,7 +1405,17 @@ def get_full_snapshot(
         int, Field(ge=1, le=MAX_DAYS_ACTIVITIES, description="Training load window in days.")
     ] = 28,
 ) -> dict[str, Any]:
-    """Comprehensive Garmin data snapshot for holistic analysis."""
+    """Comprehensive Garmin data snapshot for holistic analysis.
+
+    Every section carries a ``data_source`` field naming the backend that
+    answered it (`personal`, `unofficial`, or `personal+unofficial` when one
+    section needed both — with the per-endpoint map in ``source_detail``). In
+    hybrid mode this makes it visible which numbers are official-API data and
+    which came from the derived-metrics backend, instead of hiding a fallback.
+    (``data_source`` rather than ``source``: some sections already use ``source``
+    for their own provenance string, e.g. ``garmin_training_status``.)
+    """
+    manager = get_manager()
     sections: dict[str, Callable[[], dict[str, Any]]] = {
         "recovery": get_recovery,
         "sleep": lambda: get_sleep(7),
@@ -1403,14 +1431,51 @@ def get_full_snapshot(
     }
     out: dict[str, Any] = {
         "snapshot_date": today_iso(),
+        "auth_backend": manager.backend,
         "activity_window_days": activity_days,
         "load_window_days": load_days,
     }
     with ThreadPoolExecutor(max_workers=3) as ex:
-        futures = {name: ex.submit(_safe_section, fn) for name, fn in sections.items()}
+        futures = {
+            name: ex.submit(_section_with_source, fn, manager.backend)
+            for name, fn in sections.items()
+        }
         for name, future in futures.items():
             out[name] = future.result()
+
+    out["section_sources"] = {
+        name: section.get("data_source")
+        for name, section in out.items()
+        if isinstance(section, dict) and section.get("data_source")
+    }
+    mixed = sorted(
+        name for name, source in out["section_sources"].items() if source == "personal+unofficial"
+    )
+    out["hybrid_fallbacks"] = mixed
     return out
+
+
+def _section_with_source(
+    fn: Callable[[], dict[str, Any]], backend: str
+) -> dict[str, Any]:
+    """Run one snapshot section and tag it with the backend(s) that answered."""
+    from .hybrid import capture_call
+
+    try:
+        payload, sources = capture_call(fn)
+    except Exception as exc:  # noqa: BLE001 - one bad section must not kill the snapshot
+        return {"error": f"{type(exc).__name__}: {exc}", "data_source": backend}
+    if not isinstance(payload, dict):
+        return payload
+    used = sorted(set(sources.values()))
+    if not used:
+        payload.setdefault("data_source", backend)
+    elif len(used) == 1:
+        payload.setdefault("data_source", used[0])
+    else:
+        payload.setdefault("data_source", "personal+unofficial")
+        payload.setdefault("source_detail", dict(sorted(sources.items())))
+    return payload
 
 
 def _safe_section(fn: Callable[[], dict[str, Any]]) -> dict[str, Any]:

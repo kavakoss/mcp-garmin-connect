@@ -229,7 +229,7 @@ Per-client examples (Claude Desktop, Claude Code, Cursor, Continue, Hermes, gene
 | `get_fitness_age` | Garmin fitness age versus chronological age — **Personal API only** |
 | `download_activity_file` | Original activity file (ZIP with the `.FIT`) written to disk — **Personal API only** |
 | `get_health_summary` | Compact recovery, sleep, RHR, and stress snapshot |
-| `get_full_snapshot` | Broad multi-section Garmin snapshot |
+| `get_full_snapshot` | Broad multi-section Garmin snapshot; each section carries `data_source` (and `source_detail` when a section needed both backends) |
 
 ## Activity windows
 

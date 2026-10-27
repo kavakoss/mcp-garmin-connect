@@ -14,6 +14,10 @@
   status/load, readiness, VO2 Max, race predictions, PRs) go to email/password,
   with automatic fallback when a read fails. Auth errors are never masked.
   `serve --auth-mode hybrid` overrides it for a single run.
+- `get_full_snapshot` now tags each section with `data_source` (plus
+  `source_detail` for mixed sections), lists `hybrid_fallbacks`, and exposes
+  `auth_backend` / `section_sources`. Attribution survives the endpoint cache and
+  the multi-threaded day loops, so a fallback is visible instead of silent.
 - Six new tools, available on the Personal API backend: `get_body_composition`,
   `get_spo2`, `get_hydration`, `get_steps_history`, `get_fitness_age`, and
   `download_activity_file` (original `.FIT` inside a ZIP).
