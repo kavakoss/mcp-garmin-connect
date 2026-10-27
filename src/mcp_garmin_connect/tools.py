@@ -664,9 +664,16 @@ def _recent_activity_dates(days: int = 120, errors: ErrorList | None = None) -> 
     return dates
 
 
+def _supports_derived_metrics() -> bool:
+    """Whether the active backend can answer Garmin-derived metrics at all."""
+    return getattr(_client(), "supports_derived_metrics", True)
+
+
 def _latest_max_metrics(
     errors: ErrorList | None = None,
 ) -> tuple[str | None, dict[str, Any] | None]:
+    if not _supports_derived_metrics():
+        return None, None
     candidate_dates = [today_iso(), *_recent_activity_dates(errors=errors)]
     seen: set[str] = set()
     for day in candidate_dates:

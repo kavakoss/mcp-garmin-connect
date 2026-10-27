@@ -1,3 +1,33 @@
+## 0.4.0 — 2026-10-28
+
+The Personal API is rate-limited far harder than the undocumented endpoints: a
+burst of 12 parallel requests comes back as `429` with `Retry-After: 14`. The
+per-day tool loops (30 calls for 30 days of RHR) blew that budget instantly, and
+`get_full_snapshot` silently fell back to email/password for half its sections.
+
+### Added
+- **Batched range reads.** Sleep, HRV, resting HR and stress are fetched once per
+  rolling window (`/dailySleepSummariesByDate`, `/hrv/daily/{from}/{to}`,
+  `/v2/dailysummaries`, `/stats/stress/daily/{from}/{to}`) and served from an
+  in-memory window with a 15-minute TTL. Measured on a live account: **74
+  day-reads cost 8 requests instead of 74**, and a full snapshot costs 15.
+- Per-endpoint range caps, because Garmin's maximum differs per endpoint
+  (verified: sleep 31 days OK / 35 rejected, stress 28 OK / 31 rejected,
+  dailysummaries and HRV 35 OK). `GARMIN_PERSONAL_BATCH_DAYS` (default 28),
+  `GARMIN_PERSONAL_BATCH_TTL_SECONDS` (900), `GARMIN_PERSONAL_MAX_CONCURRENCY` (2).
+- `429` handling honours `Retry-After` and retries twice before giving up, and the
+  Personal API client caps its own concurrency.
+
+### Changed
+- `supports_derived_metrics` capability flag: on the Personal API, derived-metric
+  lookups stop after one clear "not exposed by this tier" instead of probing ~40
+  activity dates and collecting an identical error from each. Snapshot error
+  entries dropped from ~60 to 6 on a live account.
+
+### Verified
+- Sleep hours/score, resting HR and stress match the email/password backend
+  **exactly**, day for day, over 5 days.
+
 ## 0.3.2 — 2026-10-28
 
 ### Fixed

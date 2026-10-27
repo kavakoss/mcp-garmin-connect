@@ -98,7 +98,14 @@ class GarminClientManager:
             cache_path=self.settings.garmin_personal_token_cache,
             timeout=self.settings.garmin_personal_timeout_seconds,
         )
-        backend = PersonalApiBackend(PersonalApiClient(authenticator))
+        backend = PersonalApiBackend(
+            PersonalApiClient(
+                authenticator,
+                max_concurrency=self.settings.garmin_personal_max_concurrency,
+            ),
+            batch_days=self.settings.garmin_personal_batch_days,
+            batch_ttl_seconds=self.settings.garmin_personal_batch_ttl_seconds,
+        )
         backend.get_user_profile()  # fail fast on an expired or revoked key
         log.info("Garmin Personal API authenticated (official backend)")
         return backend

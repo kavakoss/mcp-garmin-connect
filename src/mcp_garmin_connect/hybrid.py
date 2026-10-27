@@ -151,6 +151,13 @@ class HybridBackend:
         self._unofficial = unofficial
 
     @property
+    def supports_derived_metrics(self) -> bool:
+        return any(
+            getattr(backend, "supports_derived_metrics", True)
+            for backend in (self._personal, self._unofficial)
+        )
+
+    @property
     def display_name(self) -> str | None:
         for backend in (self._personal, self._unofficial):
             name = getattr(backend, "display_name", None)

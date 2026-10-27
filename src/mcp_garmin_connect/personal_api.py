@@ -27,7 +27,8 @@ import os
 import re
 import time
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
+from threading import BoundedSemaphore, Lock
 from typing import Any
 
 import httpx
@@ -255,10 +256,24 @@ def _token_from_response(response: Any) -> str | None:
 
 
 class PersonalApiClient:
-    """Thin authenticated GET client for the Personal API host."""
+    """Thin authenticated GET client for the Personal API host.
 
-    def __init__(self, authenticator: PersonalApiAuthenticator) -> None:
+    Garmin rate-limits this tier hard: a burst of a dozen parallel requests comes
+    back as ``429`` with ``Retry-After`` (measured 2026-10-28). So the client caps
+    its own concurrency and honours ``Retry-After`` instead of hammering, which
+    also keeps a full snapshot from burning the budget in one go.
+    """
+
+    MAX_429_RETRIES = 2
+
+    def __init__(
+        self,
+        authenticator: PersonalApiAuthenticator,
+        *,
+        max_concurrency: int = 2,
+    ) -> None:
         self.authenticator = authenticator
+        self._semaphore = BoundedSemaphore(max(1, max_concurrency))
 
     def close(self) -> None:
         self.authenticator.close()
@@ -269,6 +284,26 @@ class PersonalApiClient:
     def __exit__(self, *exc_info: object) -> None:
         self.close()
 
+    def _request(
+        self, path: str, params: dict[str, Any] | None
+    ) -> httpx.Response:
+        with self._semaphore:
+            token = self.authenticator.obtain_token()
+            url = f"{self.authenticator.base_url}{path}"
+            return self.authenticator.http.get(
+                url,
+                params=params,
+                headers={"Authorization": f"Bearer {token.access_token}"},
+            )
+
+    @staticmethod
+    def _retry_after_seconds(response: httpx.Response, attempt: int) -> float:
+        raw = response.headers.get("retry-after")
+        try:
+            return min(30.0, max(0.0, float(raw))) if raw is not None else 2.0 * (attempt + 1)
+        except ValueError:
+            return 2.0 * (attempt + 1)
+
     def get(
         self,
         path: str,
@@ -276,16 +311,20 @@ class PersonalApiClient:
         *,
         _retry_on_401: bool = True,
     ) -> Any:
-        token = self.authenticator.obtain_token()
         url = f"{self.authenticator.base_url}{path}"
-        try:
-            response = self.authenticator.http.get(
-                url,
-                params=params,
-                headers={"Authorization": f"Bearer {token.access_token}"},
-            )
-        except httpx.HTTPError as exc:
-            raise PersonalApiHttpError(f"Personal API request failed: {exc}", url=url) from exc
+        for attempt in range(self.MAX_429_RETRIES + 1):
+            try:
+                response = self._request(path, params)
+            except httpx.HTTPError as exc:
+                raise PersonalApiHttpError(
+                    f"Personal API request failed: {exc}", url=url
+                ) from exc
+            if response.status_code == 429 and attempt < self.MAX_429_RETRIES:
+                wait = self._retry_after_seconds(response, attempt)
+                log.info("Personal API 429 on %s, retrying in %.0fs", path, wait)
+                time.sleep(wait)
+                continue
+            break
 
         if response.status_code == 401 and _retry_on_401:
             # A token can be revoked before its exp claim; ask for a new one once.
@@ -520,10 +559,109 @@ class PersonalApiBackend:
     """
 
     backend_name = "personal"
+    #: Garmin-derived metrics (VO2 Max, readiness, training status, race
+    #: predictions, PRs) are not in this tier; callers can skip instead of
+    #: probing every date and collecting identical errors.
+    supports_derived_metrics = False
 
-    def __init__(self, client: PersonalApiClient) -> None:
+    #: Per-day tools ask for one day at a time; the API charges per request and
+    #: rate-limits hard, so a rolling window is fetched once and served from
+    #: memory. Garmin caps how long a range may be, per endpoint (measured
+    #: 2026-10-28: sleep 31 days OK / 35 rejected, stress 28 OK / 31 rejected,
+    #: dailysummaries and HRV 35 OK). Stay inside the verified maximums.
+    DEFAULT_BATCH_DAYS = 28
+    DEFAULT_BATCH_TTL_SECONDS = 900
+    RANGE_LIMITS = {"sleep": 30, "stress": 28, "summaries": 30, "hrv": 30}
+
+    def __init__(
+        self,
+        client: PersonalApiClient,
+        *,
+        batch_days: int = DEFAULT_BATCH_DAYS,
+        batch_ttl_seconds: int = DEFAULT_BATCH_TTL_SECONDS,
+    ) -> None:
         self._client = client
         self._display_name: str | None = None
+        self._batch_days = max(1, batch_days)
+        self._batch_ttl = max(0, batch_ttl_seconds)
+        self._batch: dict[str, tuple[float, Any]] = {}
+        self._batch_lock = Lock()
+
+    # -- batching ----------------------------------------------------------
+    def _window(self, kind: str) -> tuple[str, str]:
+        days = min(self._batch_days, self.RANGE_LIMITS.get(kind, self._batch_days))
+        today = date.today()
+        return (today - timedelta(days=days - 1)).isoformat(), today.isoformat()
+
+    def _batched(self, kind: str, loader: Any) -> Any:
+        now = time.time()
+        cached = self._batch.get(kind)
+        if cached is not None and cached[0] > now:
+            return cached[1]
+        with self._batch_lock:
+            cached = self._batch.get(kind)
+            if cached is not None and cached[0] > now:
+                return cached[1]
+            value = loader()
+            self._batch[kind] = (now + self._batch_ttl, value)
+            return value
+
+    def _in_window(self, cdate: str, kind: str) -> bool:
+        start, end = self._window(kind)
+        return start <= cdate <= end
+
+    def _by_day(self, rows: Any, key: str = "calendarDate") -> dict[str, Any]:
+        out: dict[str, Any] = {}
+        if isinstance(rows, list):
+            for item in rows:
+                if isinstance(item, dict):
+                    day = str(item.get(key) or "")[:10]
+                    if day:
+                        out[day] = item
+        return out
+
+    def _sleep_index(self) -> dict[str, Any]:
+        def load() -> dict[str, Any]:
+            start, end = self._window("sleep")
+            raw = self._client.get(
+                "/sleep-service/sleep/dailySleepSummariesByDate",
+                {"startDate": start, "endDate": end},
+            )
+            return self._by_day(raw)
+
+        return self._batched("sleep", load)
+
+    def _hrv_index(self) -> dict[str, Any]:
+        def load() -> dict[str, Any]:
+            start, end = self._window("hrv")
+            raw = self._client.get(f"/hrv-service/hrv/daily/{start}/{end}")
+            rows = raw.get("hrvSummaries") if isinstance(raw, dict) else raw
+            return self._by_day(rows)
+
+        return self._batched("hrv", load)
+
+    def _summary_index(self) -> dict[str, Any]:
+        def load() -> dict[str, Any]:
+            start, end = self._window("summaries")
+            raw = self._client.get(
+                "/usersummary-service/v2/dailysummaries",
+                {"startDate": start, "endDate": end},
+            )
+            rows = raw.get("data") if isinstance(raw, dict) else raw
+            return self._by_day(rows)
+
+        return self._batched("summaries", load)
+
+    def _stress_index(self) -> dict[str, Any]:
+        def load() -> dict[str, Any]:
+            start, end = self._window("stress")
+            raw = self._client.get(f"/usersummary-service/stats/stress/daily/{start}/{end}")
+            return {
+                day: _flatten_values(item)
+                for day, item in self._by_day(raw).items()
+            }
+
+        return self._batched("stress", load)
 
     # -- identity ----------------------------------------------------------
     @property
@@ -538,18 +676,30 @@ class PersonalApiBackend:
 
     # -- wellness ----------------------------------------------------------
     def get_sleep_data(self, cdate: str) -> dict[str, Any]:
+        if self._in_window(cdate, "sleep"):
+            item = self._sleep_index().get(cdate)
+            if item is not None:
+                return {"dailySleepDTO": item}
         raw = self._client.get("/sleep-service/sleep/dailySleep", {"date": cdate})
         if isinstance(raw, dict) and "dailySleepDTO" in raw:
             return raw
         return {"dailySleepDTO": raw} if isinstance(raw, dict) else {}
 
     def get_hrv_data(self, cdate: str) -> dict[str, Any]:
+        if self._in_window(cdate, "hrv"):
+            item = self._hrv_index().get(cdate)
+            if item is not None:
+                return {"hrvSummary": item}
         raw = self._client.get(f"/hrv-service/hrv/{cdate}")
         if isinstance(raw, dict) and "hrvSummary" in raw:
             return raw
         return {"hrvSummary": raw} if isinstance(raw, dict) else {}
 
     def _daily_summary(self, cdate: str) -> dict[str, Any]:
+        if self._in_window(cdate, "summaries"):
+            item = self._summary_index().get(cdate)
+            if item is not None:
+                return item
         raw = self._client.get(
             "/usersummary-service/v2/dailysummaries",
             {"startDate": cdate, "endDate": cdate},
@@ -582,9 +732,13 @@ class PersonalApiBackend:
         it nests them under ``values``. ``/dailysummaries`` has average + maximum
         plus proportions of the tracked day. Neither alone is complete.
         """
-        stats = _flatten_values(
-            _first(self._client.get(f"/usersummary-service/stats/stress/daily/{cdate}/{cdate}"))
-        )
+        stats: dict[str, Any]
+        if self._in_window(cdate, "stress"):
+            stats = dict(self._stress_index().get(cdate) or {})
+        else:
+            stats = _flatten_values(
+                _first(self._client.get(f"/usersummary-service/stats/stress/daily/{cdate}/{cdate}"))
+            )
         summary = self._daily_summary(cdate)
         stress = summary.get("stress") if isinstance(summary.get("stress"), dict) else {}
         chronology = summary.get("wellnessChronology")

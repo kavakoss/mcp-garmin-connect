@@ -71,6 +71,9 @@ class Settings:
     garmin_personal_token_cache: str = "~/.garminconnect/personal_api_token.json"
     garmin_personal_base_url: str = "https://personal.connectapi.garmin.com"
     garmin_personal_timeout_seconds: float = 20.0
+    garmin_personal_max_concurrency: int = 2
+    garmin_personal_batch_days: int = 35
+    garmin_personal_batch_ttl_seconds: int = 900
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -119,6 +122,15 @@ class Settings:
             ),
             garmin_personal_timeout_seconds=float(
                 os.getenv("GARMIN_PERSONAL_TIMEOUT_SECONDS", "20") or 20
+            ),
+            garmin_personal_max_concurrency=max(
+                1, _env_int("GARMIN_PERSONAL_MAX_CONCURRENCY", 2)
+            ),
+            garmin_personal_batch_days=max(
+                1, _env_int("GARMIN_PERSONAL_BATCH_DAYS", 35)
+            ),
+            garmin_personal_batch_ttl_seconds=max(
+                0, _env_int("GARMIN_PERSONAL_BATCH_TTL_SECONDS", 900)
             ),
         )
 

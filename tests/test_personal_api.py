@@ -451,3 +451,145 @@ def test_unrecognisable_token_body_raises(tmp_path: Path) -> None:
     auth = _authenticator(tmp_path, httpx.MockTransport(handler))
     with pytest.raises(PersonalApiHttpError):
         auth.obtain_token()
+
+
+# ------------------------------------------------------- batching + rate limits
+
+
+class _CountingTransport:
+    def __init__(self, routes: dict[str, Any]) -> None:
+        self.routes = routes
+        self.calls: list[str] = []
+
+    def __call__(self, request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/token"):
+            return _token_response()
+        self.calls.append(request.url.path)
+        for prefix, payload in self.routes.items():
+            if request.url.path.startswith(prefix):
+                return httpx.Response(200, json=payload)
+        return httpx.Response(404, json={"error": "no route", "path": request.url.path})
+
+
+def _counting_backend(
+    tmp_path: Path, routes: dict[str, Any]
+) -> tuple[PersonalApiBackend, _CountingTransport]:
+    transport = _CountingTransport(routes)
+    auth = PersonalApiAuthenticator(
+        API_KEY,
+        cache_path=str(tmp_path / "token.json"),
+        client=httpx.Client(transport=httpx.MockTransport(transport)),
+    )
+    return PersonalApiBackend(PersonalApiClient(auth, max_concurrency=1)), transport
+
+
+def test_day_loops_cost_one_request_per_endpoint(tmp_path: Path) -> None:
+    from datetime import date, timedelta
+
+    today = date.today()
+    days = [(today - timedelta(days=offset)).isoformat() for offset in range(5)]
+    sleep_rows = [
+        {
+            "calendarDate": day,
+            "sleepTimeSeconds": 25000,
+            "sleepScores": {"overall": {"value": 80}},
+        }
+        for day in days
+    ]
+    backend, transport = _counting_backend(
+        tmp_path, {"/sleep-service/sleep/dailySleepSummariesByDate": sleep_rows}
+    )
+
+    for day in days:
+        assert backend.get_sleep_data(day)["dailySleepDTO"]["sleepTimeSeconds"] == 25000
+
+    assert transport.calls.count("/sleep-service/sleep/dailySleepSummariesByDate") == 1
+    assert "/sleep-service/sleep/dailySleep" not in transport.calls
+
+
+def test_hrv_and_resting_hr_share_their_batched_windows(tmp_path: Path) -> None:
+    from datetime import date, timedelta
+
+    today = date.today()
+    days = [(today - timedelta(days=offset)).isoformat() for offset in range(10)]
+    backend, transport = _counting_backend(
+        tmp_path,
+        {
+            "/hrv-service/hrv/daily": {
+                "hrvSummaries": [
+                    {"calendarDate": day, "lastNightAvg": 41, "weeklyAvg": 40, "status": "BALANCED"}
+                    for day in days
+                ]
+            },
+            "/usersummary-service/v2/dailysummaries": {
+                "data": [{"calendarDate": day, "heartRate": {"restingValue": 58}} for day in days]
+            },
+        },
+    )
+
+    for day in days:
+        assert backend.get_hrv_data(day)["hrvSummary"]["lastNightAvg"] == 41
+        assert backend.get_rhr_day(day)["restingHeartRate"] == 58
+
+    hrv_calls = [c for c in transport.calls if c.startswith("/hrv-service/hrv/daily")] or [
+        c for c in transport.calls if c.startswith("/hrv-service/hrv/2")
+    ]
+    assert len(hrv_calls) == 1, transport.calls
+    assert transport.calls.count("/usersummary-service/v2/dailysummaries") == 1
+
+
+def test_old_days_outside_the_window_fall_back_to_single_day_calls(tmp_path: Path) -> None:
+    backend, transport = _counting_backend(
+        tmp_path,
+        {
+            "/sleep-service/sleep/dailySleep": {
+                "dailySleepDTO": {
+                    "sleepTimeSeconds": 20000,
+                    "sleepScores": {"overall": {"value": 60}},
+                }
+            }
+        },
+    )
+
+    backend.get_sleep_data("2020-01-01")
+
+    assert transport.calls == ["/sleep-service/sleep/dailySleep"]
+
+
+def test_429_with_retry_after_is_retried_then_succeeds(tmp_path: Path) -> None:
+    state = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/token"):
+            return _token_response()
+        state["n"] += 1
+        if state["n"] == 1:
+            return httpx.Response(429, headers={"retry-after": "0"})
+        return httpx.Response(200, json={"ok": True})
+
+    auth = PersonalApiAuthenticator(
+        API_KEY,
+        cache_path=str(tmp_path / "token.json"),
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    client = PersonalApiClient(auth, max_concurrency=1)
+
+    assert client.get("/activity-service/activity/1") == {"ok": True}
+    assert state["n"] == 2
+
+
+def test_429_is_not_retried_forever(tmp_path: Path) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/token"):
+            return _token_response()
+        return httpx.Response(429, headers={"retry-after": "0"})
+
+    auth = PersonalApiAuthenticator(
+        API_KEY,
+        cache_path=str(tmp_path / "token.json"),
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    client = PersonalApiClient(auth, max_concurrency=1)
+
+    with pytest.raises(PersonalApiRateLimitError):
+        client.get("/activity-service/activity/1")

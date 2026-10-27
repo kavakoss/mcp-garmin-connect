@@ -155,6 +155,29 @@ table at the top: on the personal backend those fields come back `null` with an
 
 Full reference: <https://developer.garmin.com/gc-developer-program/personal/swagger-docs/>.
 
+## Rate limits and batching
+
+The Personal API is rate-limited hard: 12 parallel requests return `429` with
+`Retry-After: 14`. The server therefore:
+
+- caps its own concurrency (`GARMIN_PERSONAL_MAX_CONCURRENCY`, default 2);
+- honours `Retry-After` and retries twice before raising;
+- reads **one range per endpoint** instead of one call per day, cached in memory
+  for `GARMIN_PERSONAL_BATCH_TTL_SECONDS` (default 900).
+
+Range length is capped by Garmin, differently per endpoint — sleeping past the
+limit returns `400`, not a smaller result:
+
+| Endpoint | Verified max |
+|---|---|
+| `/sleep-service/sleep/dailySleepSummariesByDate` | 31 days |
+| `/usersummary-service/stats/stress/daily/{from}/{to}` | 28 days |
+| `/usersummary-service/v2/dailysummaries` | 35 days |
+| `/hrv-service/hrv/daily/{from}/{to}` | 35 days |
+
+`GARMIN_PERSONAL_BATCH_DAYS` defaults to 28, which fits all four. Days older than
+the window fall back to single-day calls.
+
 ## Verified response shapes (2026-10-28)
 
 The Swagger pages describe fields but not the envelope, and three of them bite:
