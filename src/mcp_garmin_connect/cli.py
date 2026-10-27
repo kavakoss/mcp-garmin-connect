@@ -25,6 +25,12 @@ def main(argv: list[str] | None = None) -> None:
     serve.add_argument("--host", default="127.0.0.1")
     serve.add_argument("--port", type=int, default=8765)
     serve.add_argument(
+        "--auth-mode",
+        choices=["auto", "personal", "unofficial", "hybrid"],
+        default=None,
+        help="Override GARMIN_AUTH_MODE for this run (hybrid = both backends).",
+    )
+    serve.add_argument(
         "--demo",
         action="store_true",
         help="Serve fictional sample data instead of Garmin Connect (no credentials needed).",
@@ -87,6 +93,8 @@ def main(argv: list[str] | None = None) -> None:
     elif args.command == "serve":
         if args.demo:
             os.environ["GARMIN_DEMO"] = "1"
+        if args.auth_mode:
+            os.environ["GARMIN_AUTH_MODE"] = args.auth_mode
         run_server(transport=args.transport, host=args.host, port=args.port)
     elif args.command == "doctor":
         _doctor(include_live=args.live)

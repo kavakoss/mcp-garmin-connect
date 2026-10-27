@@ -132,16 +132,20 @@ class Settings:
         return self.garmin_personal_api_key
 
     def resolved_auth_mode(self) -> str:
-        """Which Garmin backend to use: ``personal``, ``unofficial`` or ``demo``.
+        """Which Garmin backend to use: ``personal``, ``unofficial``, ``hybrid`` or ``demo``.
 
         ``auto`` (the default) prefers the official Personal API when a key is
         configured, because it is stable and rate-limit friendly, and falls back
         to the email/password flow otherwise.
+
+        ``hybrid`` needs both credential sets and routes each endpoint to the
+        backend that owns it (see ``hybrid.py``), which is the only mode that
+        returns derived metrics *and* raw files in one process.
         """
         if self.garmin_demo:
             return "demo"
         mode = (self.garmin_auth_mode or "auto").strip().lower()
-        if mode in {"personal", "unofficial"}:
+        if mode in {"personal", "unofficial", "hybrid"}:
             return mode
         return "personal" if self.garmin_personal_api_key else "unofficial"
 

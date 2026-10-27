@@ -99,6 +99,15 @@ class GarminClientManager:
         log.info("Garmin Personal API authenticated (official backend)")
         return backend
 
+    def login_hybrid(self) -> Any:
+        """Run both backends and route each call to the one that owns the data."""
+        from .hybrid import HybridBackend
+
+        personal = self.login_personal()
+        unofficial = self.login(allow_interactive_mfa=False)
+        log.info("Garmin hybrid backend active (official Personal API + email/password)")
+        return HybridBackend(personal=personal, unofficial=unofficial)
+
     def client(self) -> Any:
         if self._client is None:
             with self._login_lock:
@@ -111,6 +120,8 @@ class GarminClientManager:
                         log.info("Garmin demo mode active: fictional data, no credentials used")
                     elif mode == "personal":
                         self._client = self.login_personal()
+                    elif mode == "hybrid":
+                        self._client = self.login_hybrid()
                     else:
                         self._client = self.login(allow_interactive_mfa=False)
                         log.info(

@@ -9,6 +9,11 @@
   bearer token, cached at `~/.garminconnect/personal_api_token.json` (mode 0600),
   keyed by a hash of the API key, with one automatic refresh on `401`.
   See `docs/personal-api.md`.
+- **`GARMIN_AUTH_MODE=hybrid`** runs both backends in one process: wellness and
+  raw-file reads go to the official API, Garmin-derived metrics (training
+  status/load, readiness, VO2 Max, race predictions, PRs) go to email/password,
+  with automatic fallback when a read fails. Auth errors are never masked.
+  `serve --auth-mode hybrid` overrides it for a single run.
 - Six new tools, available on the Personal API backend: `get_body_composition`,
   `get_spo2`, `get_hydration`, `get_steps_history`, `get_fitness_age`, and
   `download_activity_file` (original `.FIT` inside a ZIP).

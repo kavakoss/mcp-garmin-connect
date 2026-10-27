@@ -52,13 +52,17 @@ The core server is provider-neutral. DeepSeek, OpenAI, Claude, OpenRouter, and G
 | Sleep/HRV/stress/body battery/RHR/weight/SpO2/steps | ✅ | ✅ |
 | Training status/load, readiness, VO2 Max, race predictions, personal records | ❌ | ✅ |
 
-`GARMIN_AUTH_MODE=auto` (default) uses the official Personal API when `GARMIN_PERSONAL_API_KEY` is set and falls back to email/password otherwise. Tools that need a metric the active backend cannot see return that field as `null` with an `errors` entry explaining why, instead of failing the whole call. Setup and endpoint mapping: [docs/personal-api.md](docs/personal-api.md).
+`GARMIN_AUTH_MODE` picks the strategy:
+
+- `auto` (default) — official Personal API when `GARMIN_PERSONAL_API_KEY` is set, else email/password.
+- `personal` / `unofficial` — force one backend.
+- `hybrid` — run **both**: wellness and raw-file reads go to the official API, Garmin-derived metrics go to email/password, with automatic fallback when a call fails. This is the only mode that returns derived metrics *and* raw `.FIT` files from one process. It needs both credential sets. Tools that need a metric the active backend cannot see return that field as `null` with an `errors` entry explaining why, instead of failing the whole call. Setup and endpoint mapping: [docs/personal-api.md](docs/personal-api.md).
 
 ## Features
 
 - **Published on PyPI** — run it with `uvx mcp-garmin-connect`, no clone or manual install.
 - **24 Garmin tools and 4 prompt templates** for training and recovery analysis.
-- **Two Garmin backends** — the official [Connect Personal API](docs/personal-api.md) (self-serve key, stable) or the unofficial email/password flow (wider metric coverage). `GARMIN_AUTH_MODE=auto` picks one for you.
+- **Two Garmin backends, switchable or combined** — the official [Connect Personal API](docs/personal-api.md) (self-serve key, stable) and the unofficial email/password flow (wider metric coverage). `GARMIN_AUTH_MODE=auto` picks one; `hybrid` runs both and routes each call to the backend that owns the data.
 - **Raw activity files** — `download_activity_file` fetches the original `.FIT` (ZIP) through the Personal API.
 - **Demo mode** — `serve --demo` runs on fictional sample data with no credentials, for try-outs and recordings.
 - **Local MCP server** over `stdio` or Streamable HTTP (`/mcp`).
@@ -251,7 +255,7 @@ All settings come from environment variables (`.env` is loaded automatically).
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `GARMIN_AUTH_MODE` | `auto` | `auto`, `personal` (official API) or `unofficial` (email/password) |
+| `GARMIN_AUTH_MODE` | `auto` | `auto`, `personal` (official API), `unofficial` (email/password) or `hybrid` (both, routed per endpoint) |
 | `GARMIN_PERSONAL_API_KEY` | — | Personal API key from [Connect settings](https://connect.garmin.com/app/settings/personalApiToken) — enables the official backend |
 | `GARMIN_PERSONAL_TOKEN_CACHE` | `~/.garminconnect/personal_api_token.json` | Where the 24 h bearer token is cached (mode `0600`) |
 | `GARMIN_PERSONAL_BASE_URL` | `https://personal.connectapi.garmin.com` | Personal API host override |
@@ -365,7 +369,7 @@ uv run pytest tests/live
 - **`Garmin rate-limited the request`** — lower `GARMIN_MAX_CONCURRENCY` (for example to `3`) and retry after a few minutes.
 - **`Garmin authentication failed`** — check `GARMIN_EMAIL`/`GARMIN_PASSWORD`, then run `uv run garmin-mcp login` from a real terminal (MFA prompts need interactive input).
 - **`Garmin rejected the Personal API key`** — keys expire after 30/90/180/365 days. Create a new one at <https://connect.garmin.com/app/settings/personalApiToken>, update `GARMIN_PERSONAL_API_KEY`, then `uv run garmin-mcp personal-api --check`.
-- **`personal api required`** — that tool only exists on the official backend. Set `GARMIN_PERSONAL_API_KEY` and `GARMIN_AUTH_MODE=personal`.
+- **`personal api required`** — that tool only exists on the official backend. Set `GARMIN_PERSONAL_API_KEY` and `GARMIN_AUTH_MODE=personal` (or `hybrid`).
 - **A derived metric is `null` on the personal backend** — training status/load, readiness, VO2 Max, race predictions and personal records are not in Garmin's Personal API. Switch to `GARMIN_AUTH_MODE=unofficial` when you need them.
 - **A tool returns `errors`** — the array names the endpoint that failed; the rest of the payload is still valid partial data.
 

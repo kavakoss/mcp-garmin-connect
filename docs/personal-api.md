@@ -44,6 +44,39 @@ Store it in `.env` (git-ignored) or your secret manager — never commit it.
 - `personal` — official API only; derived metrics come back empty with an
   explanatory `errors` entry.
 - `unofficial` — ignore the key and use email/password.
+- `hybrid` — run **both** (see below).
+
+## Hybrid mode: both backends in one process
+
+`GARMIN_AUTH_MODE=hybrid` needs both credential sets and routes every call to the
+backend that actually owns that data:
+
+| Reads | Backend |
+|---|---|
+| sleep, HRV, resting HR, stress, body battery | personal |
+| activities, activity detail, splits, activity file (.FIT) | personal |
+| weight/body composition, SpO2, hydration, steps, fitness age | personal |
+| training status / load, training readiness | unofficial |
+| VO2 Max, race predictions, cycling FTP, personal records | unofficial |
+
+If the preferred backend fails for a read, the call falls back to the other one,
+so a Cloudflare hiccup on the email/password side still lets wellness data flow
+and vice versa. Auth errors (`PersonalApiAuthError`, expired key) are **never**
+masked by the fallback — they surface so you can rotate the key.
+
+```env
+GARMIN_AUTH_MODE=hybrid
+GARMIN_PERSONAL_API_KEY=your-key-here
+GARMIN_EMAIL=you@example.com
+GARMIN_PASSWORD=your-password
+```
+
+Check it with:
+
+```bash
+garmin-mcp doctor --live          # reports the hybrid backend and both live paths
+garmin-mcp serve --auth-mode hybrid   # one-off override without touching .env
+```
 
 ## 3. Verify
 

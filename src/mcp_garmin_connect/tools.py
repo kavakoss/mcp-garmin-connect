@@ -1437,7 +1437,7 @@ _PERSONAL_ONLY_HINT = (
 
 def _personal_only_error() -> dict[str, Any] | None:
     manager = get_manager()
-    if manager.backend in {"personal", "demo"}:
+    if manager.backend in {"personal", "hybrid", "demo"}:
         return None
     return {
         "error": "personal api required",
